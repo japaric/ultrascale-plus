@@ -1,0 +1,14 @@
+[package]
+name = "zup-quickstart"
+version = "0.1.0"
+authors = ["Jorge Aparicio <jorge@japaric.io>"]
+edition = "2018"
+
+[dependencies]
+zup-rt = { path = "../zup-rt" }
+panic-dcc = { git = "https://github.com/japaric/dcc" }
+cortex-r = { path = "../cortex-r" }
+
+[dev-dependencies.dcc]
+git = "https://github.com/japaric/dcc"
+# features = ["inline-asm"]

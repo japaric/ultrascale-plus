@@ -1,0 +1,14 @@
+[package]
+name = "zup-rt"
+version = "0.1.0"
+authors = ["Jorge Aparicio <jorge@japaric.io>"]
+edition = "2018"
+
+[dependencies]
+cortex-r = { path = "../cortex-r" }
+zup-rt-macros = { path = "macros" }
+# FIXME use `git` version
+
+[dependencies.dcc]
+features = ["inline-asm"]
+git = "https://github.com/japaric/dcc"

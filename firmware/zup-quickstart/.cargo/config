@@ -1,0 +1,11 @@
+[target.armv7r-none-eabi]
+# load and debug
+runner = "xsdb -interactive debug.tcl"
+# load and run
+# runner = "xsdb run.tcl"
+rustflags = [
+  "-C", "link-arg=-Tlink.x",
+]
+
+[build]
+target = "armv7r-none-eabi"

@@ -1,0 +1,7 @@
+[workspace]
+members = [
+  "cortex-r",
+  "zup-quickstart",
+  "zup-rt",
+  "zup-rt/macros",
+]
