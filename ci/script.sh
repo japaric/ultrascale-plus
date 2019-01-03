@@ -5,7 +5,7 @@ main() {
         arm*v7r-none-eabi*)
             ( cd tools/cargo-amp && cargo install --debug --path . -f )
 
-            pushd firmware/zup-quickstart
+            cd firmware/zup-quickstart
 
             # single-core examples
             local features=""
@@ -59,13 +59,17 @@ main() {
                 cargo amp --example $ex $features --release
             done
             ;;
+        aarch64*)
+            cd host/mrd
+
+            cargo check --target $TARGET
+            ;;
         *)
-            pushd firmware/zup-rt
+            cd firmware/zup-rt
 
             ./check-blobs.sh
             ;;
     esac
-    popd
 }
 
 main

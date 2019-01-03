@@ -1,0 +1,5 @@
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"
+
+[build]
+target = "aarch64-unknown-linux-musl"
