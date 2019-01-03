@@ -27,7 +27,6 @@ before_cache:
 
 branches:
   only:
-    - master
     - staging
     - trying
 

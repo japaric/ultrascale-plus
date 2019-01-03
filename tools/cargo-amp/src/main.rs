@@ -115,6 +115,11 @@ fn run() -> Result<i32, failure::Error> {
         if profile.is_release() {
             c.arg("--release");
         }
+        if matches.is_present("all-features") {
+            c.arg("--all-features");
+        } else if let Some(features) = matches.value_of("features") {
+            c.args(&["--features", features]);
+        }
         c.arg("--");
         c
     };
