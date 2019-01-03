@@ -22,9 +22,8 @@
 extern crate panic_dcc;
 
 use dcc::dprintln;
-use rtfm::app;
 
-#[app]
+#[rtfm::app]
 const APP: () = {
     #[init(spawn = [foo])]
     fn init() {
