@@ -18,7 +18,7 @@ main() {
                     leds-on
                 )
 
-                ( cd ../pac && ./generate.sh )
+                ( cd ../zup && ./generate.sh )
             else
                 examples=(
                     abort
