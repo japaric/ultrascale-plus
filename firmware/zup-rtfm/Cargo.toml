@@ -8,9 +8,10 @@ edition = "2018"
 name = "rtfm"
 
 [dependencies]
-zup-rtfm-macros = { path = "macros" }
 cortex-r = { path = "../cortex-r" }
+microamp = { path = "../microamp" }
 zup-rt = { path = "../zup-rt" }
+zup-rtfm-macros = { path = "macros" }
 
 [dependencies.heapless]
 features = ["const-fn"]
