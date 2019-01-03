@@ -11,6 +11,7 @@ cortex-r = { path = "../cortex-r" }
 
 [dev-dependencies]
 zup-rtfm = { path = "../zup-rtfm" }
+microamp = { path = "../microamp" }
 
 [dev-dependencies.dcc]
 git = "https://github.com/japaric/dcc"
