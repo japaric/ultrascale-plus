@@ -1,0 +1,18 @@
+#!/bin/bash
+
+set -euxo pipefail
+
+main() {
+    local file=ug1087-zynq-ultrascale-registers.zip
+    local dir=${file%.zip}
+
+    cd third-party
+    rm -rf $dir
+    mkdir $dir
+    cd $dir
+    curl -LO https://www.xilinx.com/Attachment/$file
+    unzip $file
+    rm -f $file
+}
+
+main

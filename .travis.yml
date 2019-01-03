@@ -7,6 +7,8 @@ matrix:
 
     - env: TARGET=armv7r-none-eabi
 
+    - env: TARGET=armv7r-none-eabi PAC=1
+
 before_install: set -e
 
 install:
