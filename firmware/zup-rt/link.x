@@ -16,11 +16,14 @@ MEMORY
 ENTRY(ResetTrampoline);
 EXTERN(Vectors);
 
+/* Exceptions */
 PROVIDE(Undefined = DefaultHandler);
 PROVIDE(SVC = DefaultHandler);
 PROVIDE(PrefetchAbort = DefaultHandler);
 PROVIDE(DataAbort = DefaultHandler);
 PROVIDE(FIQ = DefaultHandler);
+
+/* Interrupts */
 PROVIDE(SG0 = DefaultHandler);
 PROVIDE(SG1 = DefaultHandler);
 PROVIDE(SG2 = DefaultHandler);
