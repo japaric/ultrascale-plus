@@ -12,7 +12,7 @@ main() {
     mkdir $dir
     cd $dir
     curl -LO https://www.xilinx.com/Attachment/$file
-    unzip $file
+    unzip $file >/dev/null
     rm -f $file
 }
 
