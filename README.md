@@ -12,7 +12,7 @@ MPSoC
 ## Organization
 
 Under the `firmware` directory you'll find crates that are meant to be compiled
-for the ARM Cortex-R5 architecture. `firmware/quickstart/examples` contains
+for the ARM Cortex-R5 architecture. `firmware/zup-quickstart/examples` contains
 examples that you can run on any of the R5 cores. `firmware/README.md` contains
 more information about how to build, load, run and debug these programs.
 
