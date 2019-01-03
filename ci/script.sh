@@ -14,6 +14,7 @@ main() {
             if [ ${PAC:-0} == 1 ]; then
                 features="--features pac"
                 examples=(
+                    ipi
                     leds-off
                     leds-on
                 )
@@ -39,20 +40,24 @@ main() {
                 cargo build --example $ex $features --release
             done
 
+            # multi-core examples
             if [ ${PAC:-0} == 1 ]; then
-                return
+                examples=(
+                    ipi-rpu
+                )
+            else
+                examples=(
+                    amp
+                    rtfm-mc-cross
+                    rtfm-mc-lock
+                    rtfm-mc-message
+                )
             fi
 
-            # multi-core examples
-            examples=(
-                amp
-            )
-
             for ex in ${examples[@]}; do
-                cargo amp --example $ex
-                cargo amp --example $ex --release
+                cargo amp --example $ex $features
+                cargo amp --example $ex $features --release
             done
-
             ;;
         *)
             pushd firmware/zup-rt

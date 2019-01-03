@@ -283,13 +283,11 @@ fn tasks(ctxt: &mut Context, app: &App, analysis: &Analysis) -> proc_macro2::Tok
             items.push(quote!(
                 #[doc = #i_symbol]
                 #[shared]
-                static mut #inputs: rtfm::export::MaybeUninit<[#ty; #cap_lit]> =
-                    rtfm::export::MaybeUninit::uninitialized();
+                static mut #inputs: [#ty; #cap_lit] = ();
 
                 #[doc = #fq_symbol]
                 #[shared]
-                static mut #free_queue: rtfm::export::MaybeUninit<rtfm::export::FreeQueue<#cap_ty>>
-                    = rtfm::export::MaybeUninit::uninitialized();
+                static mut #free_queue: rtfm::export::FreeQueue<#cap_ty> = ();
 
                 #resource
             ));
@@ -405,8 +403,7 @@ fn dispatchers(ctxt: &mut Context, app: &App, analysis: &Analysis) -> proc_macro
 
                 items.push(quote!(
                     #[shared]
-                    static mut #ready_queue: rtfm::export::MaybeUninit<#ty> =
-                        rtfm::export::MaybeUninit::uninitialized();
+                    static mut #ready_queue: #ty = ();
                 ));
             } else {
                 ready_queue = mk_ident(None);

@@ -7,7 +7,7 @@ pub use cortex_r::{
 };
 pub use heapless::consts;
 use heapless::spsc::Queue;
-// pub use microamp::amp;
+pub use microamp::app as amp;
 pub use zup_rt::{entry, interrupt};
 
 pub type FreeQueue<N> = Queue<u8, N>;
