@@ -9,6 +9,9 @@ zup-rt = { path = "../zup-rt" }
 panic-dcc = { git = "https://github.com/japaric/dcc" }
 cortex-r = { path = "../cortex-r" }
 
+[dev-dependencies]
+zup-rtfm = { path = "../zup-rtfm" }
+
 [dev-dependencies.dcc]
 git = "https://github.com/japaric/dcc"
 # features = ["inline-asm"]

@@ -1,0 +1,17 @@
+[package]
+name = "zup-rtfm"
+version = "0.1.0"
+authors = ["Jorge Aparicio <jorge@japaric.io>"]
+edition = "2018"
+
+[lib]
+name = "rtfm"
+
+[dependencies]
+zup-rtfm-macros = { path = "macros" }
+cortex-r = { path = "../cortex-r" }
+zup-rt = { path = "../zup-rt" }
+
+[dependencies.heapless]
+features = ["const-fn"]
+version = "0.4.1"
