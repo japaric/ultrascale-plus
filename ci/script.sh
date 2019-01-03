@@ -3,6 +3,8 @@ set -euxo pipefail
 main() {
     case $TARGET in
         arm*v7r-none-eabi*)
+            ( cd tools/cargo-amp && cargo install --debug --path . -f )
+
             pushd firmware/zup-quickstart
 
             # single-core examples
