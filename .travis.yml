@@ -9,6 +9,8 @@ matrix:
 
     - env: TARGET=armv7r-none-eabi PAC=1
 
+    - env: TARGET=aarch64-unknown-linux-musl
+
 before_install: set -e
 
 install:
