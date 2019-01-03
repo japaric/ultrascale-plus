@@ -7,7 +7,6 @@ edition = "2018"
 [dependencies]
 cortex-r = { path = "../cortex-r" }
 zup-rt-macros = { path = "macros" }
-# FIXME use `git` version
 
 [dependencies.dcc]
 features = ["inline-asm"]

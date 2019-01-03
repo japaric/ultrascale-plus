@@ -23,9 +23,8 @@
 extern crate panic_dcc;
 
 use dcc::dprintln;
-use rtfm::app;
 
-#[app]
+#[rtfm::app]
 const APP: () = {
     static mut SHARED: u32 = 0;
 

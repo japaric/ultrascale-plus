@@ -57,6 +57,7 @@ pub enum Interrupt {
 // TODO consider rewriting this in assembly to make it constant time and as fast as possible
 #[no_mangle]
 unsafe extern "C" fn IRQ(icciar: ICCIAR) {
+    // TODO remove
     dprintln!("IRQ({:?})", icciar);
 
     cortex_r::enable_irq();
@@ -112,6 +113,7 @@ unsafe extern "C" fn IRQ(icciar: ICCIAR) {
 
     cortex_r::disable_irq();
 
+    // TODO remove
     dprintln!("~IRQ({:?})", icciar);
 
     ICC::set_icceoir(icciar);
