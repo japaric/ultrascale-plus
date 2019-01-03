@@ -2,6 +2,7 @@
 members = [
   "cortex-r",
   "microamp",
+  "zup",
   "zup-quickstart",
   "zup-rt",
   "zup-rt/macros",

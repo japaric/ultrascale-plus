@@ -30,7 +30,7 @@ the architecture of the build machine (usually x86_64).
 
 - [Zynq UltraScale+ Devices Register Reference (UG1087)][rr]
 
-[rr]: https://www.xilinx.com/support/documentation/user_guides/ug1085-zynq-ultrascale-trm.pdf
+[rr]: https://www.xilinx.com/html_docs/registers/ug1087/ug1087-zynq-ultrascale-registers.html
 
 - [Xilinx Software Command-Line Tool (XSCT) Reference Guide (UG1208)][xsct]
 

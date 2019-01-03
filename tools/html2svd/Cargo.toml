@@ -1,0 +1,10 @@
+[package]
+name = "html2svd"
+version = "0.1.0"
+authors = ["Jorge Aparicio <jorge@japaric.io>"]
+edition = "2018"
+
+[dependencies]
+select = "0.4.2"
+svd-parser = { git = "https://github.com/japaric/svd", branch = "encode", features = ["unproven"] }
+xmltree = "0.3.2"

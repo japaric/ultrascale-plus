@@ -1,0 +1,9 @@
+[package]
+name = "zup"
+version = "0.1.0"
+authors = ["Jorge Aparicio <jorge@japaric.io>"]
+edition = "2018"
+
+[dependencies]
+bare-metal = "0.2.4"
+vcell = "0.1.0"

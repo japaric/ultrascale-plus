@@ -4,15 +4,27 @@ version = "0.1.0"
 authors = ["Jorge Aparicio <jorge@japaric.io>"]
 edition = "2018"
 
+[[example]]
+name = "leds-on"
+required-features = ["pac"]
+
+[[example]]
+name = "leds-off"
+required-features = ["pac"]
+
 [dependencies]
-zup-rt = { path = "../zup-rt" }
-panic-dcc = { git = "https://github.com/japaric/dcc" }
 cortex-r = { path = "../cortex-r" }
+panic-dcc = { git = "https://github.com/japaric/dcc" }
+zup = { path = "../zup", optional = true }
+zup-rt = { path = "../zup-rt" }
 
 [dev-dependencies]
-zup-rtfm = { path = "../zup-rtfm" }
 microamp = { path = "../microamp" }
+zup-rtfm = { path = "../zup-rtfm" }
 
 [dev-dependencies.dcc]
 git = "https://github.com/japaric/dcc"
 # features = ["inline-asm"]
+
+[features]
+pac = ["zup"]

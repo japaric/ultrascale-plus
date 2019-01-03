@@ -8,23 +8,40 @@ main() {
             pushd firmware/zup-quickstart
 
             # single-core examples
-            local examples=(
-                abort
-                hello
-                icdicer
-                icdipr
-                lock
-                nested
-                panic
-                rtfm-lock
-                rtfm-message
-                sgi
-            )
+            local features=""
+            local examples=
+
+            if [ ${PAC:-0} == 1 ]; then
+                features="--features pac"
+                examples=(
+                    leds-off
+                    leds-on
+                )
+
+                ( cd ../zup && ./generate.sh )
+            else
+                examples=(
+                    abort
+                    hello
+                    icdicer
+                    icdipr
+                    lock
+                    nested
+                    panic
+                    rtfm-lock
+                    rtfm-message
+                    sgi
+                )
+            fi
 
             for ex in ${examples[@]}; do
-                cargo build --example $ex
-                cargo build --example $ex --release
+                cargo build --example $ex $features
+                cargo build --example $ex $features --release
             done
+
+            if [ ${PAC:-0} == 1 ]; then
+                return
+            fi
 
             # multi-core examples
             examples=(
