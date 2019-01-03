@@ -5,7 +5,7 @@ main() {
         arm*v7r-none-eabi*)
             rustup target add $TARGET
 
-            if [ ${PAC:-0} == 1]; then
+            if [ ${PAC:-0} == 1 ]; then
                 curl -LSfs https://japaric.github.io/trust/install.sh | \
                     sh -s -- \
                        --force \
