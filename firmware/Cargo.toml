@@ -4,4 +4,6 @@ members = [
   "zup-quickstart",
   "zup-rt",
   "zup-rt/macros",
+  "zup-rtfm",
+  "zup-rtfm/macros",
 ]
