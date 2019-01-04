@@ -32,6 +32,7 @@ main() {
                     rtfm-lock
                     rtfm-message
                     sgi
+                    trace
                 )
             fi
 
