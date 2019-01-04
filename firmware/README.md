@@ -20,7 +20,7 @@ To load and debug the programs on the R5s you'll need the following:
 
 [xsct-fix]: https://wiki.archlinux.org/index.php/Xilinx_Vivado#xsct_segfault
 
-- Boot mode must be set to JTAG. All other boot modes are pretty much untested.
+- Boot mode must be set to JTAG.
 
 - `psu_init.tcl` and `zynqmp_utils.tcl`. More details below.
 
@@ -198,4 +198,19 @@ $ echo stop > state
 
 ### Trace buffers
 
-**TODO**
+If the program contains a trace entry in its resource table (see
+`examples/trace.rs`) then a file (debugfs entry) will appear in
+`/sys/kernel/debug/remoteproc/remoteproc*/` after `start`-ing the program.
+
+``` console
+$ # on the ultrascale+
+$ echo trace > firmware
+
+$ echo start > state
+
+$ cat /sys/kernel/debug/remoteproc/remoteproc0/trace0
+Hello, world!
+```
+
+Note that the trace buffer is expected to contain a C (null terminated) string
+and `cat`-ing the file will read the buffer until the first null byte.
