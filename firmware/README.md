@@ -2,7 +2,11 @@
 
 Code for the R5 cores on the Zynq SoC.
 
-## Requirements
+## Standalone
+
+This section describes how to develop programs that directly run on the R5 cores.
+
+### Requirements
 
 To load and debug the programs on the R5s you'll need the following:
 
@@ -20,9 +24,9 @@ To load and debug the programs on the R5s you'll need the following:
 
 - `psu_init.tcl` and `zynqmp_utils.tcl`. More details below.
 
-## How-to
+### How-to
 
-### SoC initialization
+#### SoC initialization
 
 Every time you power the board you'll need to initialize the PSU (Processing
 System Unit) running this command from the `firmware` directory.
@@ -44,7 +48,7 @@ There must also be a `zynqmp_utils.tcl` file next to `init.tcl`. This file can
 be obtained from the XSDK. The default installation path of the file is
 `/opt/Xilinx/SDK/201*.*/scripts/sdk/util/`.
 
-### Building a program
+#### Building a program
 
 There are plenty of examples in the `zup-quickstart` directory. To build the
 examples run this command from within that directory.
@@ -55,7 +59,7 @@ $ cargo build --example $name
 
 You'll find the output binary in `firmware/target/armv7r-none-eabi`.
 
-### Loading and debugging a program
+#### Loading and debugging a program
 
 A `debug.tcl` script is provided in the `zup-quickstart` directory. This script
 can be used to load and debug a program:
@@ -109,7 +113,7 @@ $ CORE=0 cargo run --example hello
      Running `xsdb -interactive debug.tcl /tmp/firmware/target/armv7r-none-eabi/debug/examples/hello`
 ```
 
-### Loading and running a program
+#### Loading and running a program
 
 If you want to directly run the program you can use the `run.tcl` script.
 
@@ -129,7 +133,7 @@ $ head -n5 .cargo/config
 runner = "xsdb run.tcl"
 ```
 
-### Multi-core debugging
+#### Multi-core debugging
 
 You can debug each core independently using the `xsdb` tool. You will *not* be
 able to use GDB to debug both cores, though. GDB will connect to the first core.
@@ -151,3 +155,47 @@ Hello, world!
 ==> dcc1.log <==
 Hello, world!
 ```
+
+## Hosted
+
+This section describes how to develop R5 programs from the Linux environment
+that runs on the APU (A53 cores).
+
+### Loading and running a program
+
+You can load programs on the R5 cores using the [remoteproc] interface.
+
+[remoteproc]: https://www.kernel.org/doc/Documentation/remoteproc.txt
+
+``` console
+$ # on the build machine
+$ scp ../target/armv7r-none-eabi/debug/examples/leds-off me@ultrascale-plus:/some/where
+```
+
+``` console
+$ # on the ultrascale+
+
+$ # copy the elf file to /lib/firmware
+$ cp leds-off /lib/firmware/
+
+$ # pick one of the cores; in this example we pick core 0
+$ cd /sys/class/remoteproc/remoteproc0
+
+$ # tell the ELF loader which file to load
+$ echo leds-off > firmware
+
+$ # load and run the program
+$ echo start > state
+[ 1615.909542] remoteproc remoteproc0: powering up ff9a0100.zynqmp_r5_rproc
+[ 1615.917771] remoteproc remoteproc0: Booting fw image leds-off, size 646968
+[ 1615.924659] zynqmp_r5_remoteproc ff9a0100.zynqmp_r5_rproc: RPU boot from TCM.
+[ 1615.932249] remoteproc remoteproc0: remote processor ff9a0100.zynqmp_r5_rproc is now up
+
+$ # halt the processor; this is required to load a different program
+$ echo stop > state
+[ 1644.997783] remoteproc remoteproc0: stopped remote processor ff9a0100.zynqmp_r5_rproc
+```
+
+### Trace buffers
+
+**TODO**
