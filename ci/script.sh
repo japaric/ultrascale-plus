@@ -68,9 +68,11 @@ main() {
             cargo build --target $TARGET
             popd
 
-            pushd zup-linux
-            cargo build --target $TARGET --examples
-            popd
+            if [ ${PAC:-0} == 1 ]; then
+                pushd zup-linux
+                cargo build --target $TARGET --examples
+                popd
+            fi
             ;;
         *)
             cd firmware/zup-rt
