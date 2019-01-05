@@ -1,0 +1,9 @@
+[package]
+name = "zup-linux"
+version = "0.1.0"
+authors = ["Jorge Aparicio <jorge@japaric.io>"]
+edition = "2018"
+
+[dependencies]
+nix = "0.12.0"
+zup = { path = "../../firmware/zup" }
