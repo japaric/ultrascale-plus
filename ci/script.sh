@@ -1,6 +1,10 @@
 set -euxo pipefail
 
 main() {
+    if [ ${PAC:-0} == 1 ]; then
+        ( cd firmware/zup && ./generate.sh )
+    fi
+
     case $TARGET in
         arm*v7r-none-eabi*)
             ( cd tools/cargo-amp && cargo install --debug --path . -f )
@@ -18,8 +22,6 @@ main() {
                     leds-off
                     leds-on
                 )
-
-                ( cd ../zup && ./generate.sh )
             else
                 examples=(
                     abort
@@ -61,9 +63,16 @@ main() {
             done
             ;;
         aarch64*)
-            cd host/mrd
+            cd host
+            pushd mrd
+            cargo build --target $TARGET
+            popd
 
-            cargo check --target $TARGET
+            if [ ${PAC:-0} == 1 ]; then
+                pushd zup-linux
+                cargo build --target $TARGET --examples
+                popd
+            fi
             ;;
         *)
             cd firmware/zup-rt

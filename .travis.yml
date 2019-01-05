@@ -11,6 +11,8 @@ matrix:
 
     - env: TARGET=aarch64-unknown-linux-musl
 
+    - env: TARGET=aarch64-unknown-linux-musl PAC=1
+
 before_install: set -e
 
 install:

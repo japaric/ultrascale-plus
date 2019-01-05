@@ -1,23 +1,19 @@
 set -euxo pipefail
 
 main() {
+    if [ ${PAC:-0} == 1 ]; then
+        curl -LSfs https://japaric.github.io/trust/install.sh | \
+            sh -s -- \
+               --force \
+               --git rust-embedded/svd2rust \
+               --tag v0.14.0 \
+               --target x86_64-unknown-linux-musl
+
+        ./fetch-third-party.sh
+    fi
+
     case $TARGET in
-        arm*v7r-none-eabi*)
-            rustup target add $TARGET
-
-            if [ ${PAC:-0} == 1 ]; then
-                curl -LSfs https://japaric.github.io/trust/install.sh | \
-                    sh -s -- \
-                       --force \
-                       --git rust-embedded/svd2rust \
-                       --tag v0.14.0 \
-                       --target x86_64-unknown-linux-musl
-
-                ./fetch-third-party.sh
-            fi
-
-            ;;
-        aarch64*)
+        arm*v7r-none-eabi* | aarch64*)
             rustup target add $TARGET
             ;;
         *)
