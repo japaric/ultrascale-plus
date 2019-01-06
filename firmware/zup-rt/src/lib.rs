@@ -21,7 +21,6 @@ unsafe extern "C" fn DefaultHandler() {
 
 #[allow(non_camel_case_types)]
 pub enum Exception {
-    // FIXME these need some sort of trampoline because they don't follow the C ABI / AAPCS
     DefaultHandler,
 
     Undefined,
