@@ -19,6 +19,7 @@ main() {
                 features="--features pac"
                 examples=(
                     ipi
+                    ipi-apu
                     leds-off
                     leds-on
                 )
