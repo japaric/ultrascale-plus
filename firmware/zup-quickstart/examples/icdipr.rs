@@ -13,7 +13,7 @@
 extern crate panic_dcc;
 
 use cortex_r::gic::ICD;
-use dcc::dprintln;
+use arm_dcc::dprintln;
 use zup_rt::entry;
 
 #[entry]

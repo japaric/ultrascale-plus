@@ -21,7 +21,7 @@ extern crate panic_dcc;
 use core::sync::atomic::{self, Ordering};
 
 use cortex_r::gic::{Target, ICC, ICD};
-use dcc::dprintln;
+use arm_dcc::dprintln;
 use zup_rt::{entry, interrupt};
 
 #[entry]

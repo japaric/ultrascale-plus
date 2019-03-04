@@ -33,15 +33,15 @@
 //! ```
 
 #![feature(maybe_uninit)]
+#![feature(maybe_uninit_ref)]
 #![no_main]
 #![no_std]
 
 extern crate panic_dcc;
 
-use dcc::dprintln;
-use rtfm::app;
+use arm_dcc::dprintln;
 
-#[app(cores = 2)]
+#[rtfm::app(cores = 2)]
 const APP: () = {
     #[cfg(core = "0")]
     static mut SHARED0: u32 = 0;

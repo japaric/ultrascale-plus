@@ -4,7 +4,7 @@
 use core::sync::atomic::{self, Ordering};
 
 use cortex_r::gic::{ICC, ICCIAR};
-use dcc::dprintln;
+use arm_dcc::dprintln;
 pub use zup_rt_macros::{entry, exception, interrupt};
 
 #[no_mangle]

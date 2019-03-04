@@ -83,4 +83,10 @@ main() {
     esac
 }
 
+# fake Travis variables to be able to run this on a local machine
+if [ -z ${TARGET-} ]; then
+    TARGET=$(rustc -Vv | grep host | cut -d ' ' -f2)
+fi
+
+
 main
