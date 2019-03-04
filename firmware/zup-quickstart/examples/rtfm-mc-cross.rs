@@ -38,7 +38,7 @@
 
 extern crate panic_dcc;
 
-use dcc::dprintln;
+use arm_dcc::dprintln;
 use rtfm::app;
 
 const LIMIT: u32 = 5;

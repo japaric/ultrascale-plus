@@ -8,6 +8,6 @@ edition = "2018"
 cortex-r = { path = "../cortex-r" }
 zup-rt-macros = { path = "macros" }
 
-[dependencies.dcc]
+[dependencies.arm-dcc]
 features = ["inline-asm"]
-git = "https://github.com/japaric/dcc"
+git = "https://github.com/rust-embedded/arm-dcc"

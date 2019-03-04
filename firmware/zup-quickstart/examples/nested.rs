@@ -19,7 +19,7 @@
 extern crate panic_dcc;
 
 use cortex_r::gic::{Target, ICC, ICD};
-use dcc::dprintln;
+use arm_dcc::dprintln;
 use zup_rt::{entry, interrupt};
 
 #[entry]

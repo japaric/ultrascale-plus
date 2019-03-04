@@ -32,7 +32,7 @@ extern crate panic_dcc;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use dcc::dprintln;
+use arm_dcc::dprintln;
 use zup_rt::entry;
 
 // possible values of SEMAPHORE

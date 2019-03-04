@@ -15,7 +15,7 @@ extern crate panic_dcc;
 
 use core::intrinsics;
 
-use dcc::dprintln;
+use arm_dcc::dprintln;
 use zup_rt::{entry, exception};
 
 #[entry]

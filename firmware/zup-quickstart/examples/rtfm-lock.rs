@@ -22,7 +22,7 @@
 
 extern crate panic_dcc;
 
-use dcc::dprintln;
+use arm_dcc::dprintln;
 
 #[rtfm::app]
 const APP: () = {

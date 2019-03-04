@@ -16,7 +16,7 @@ extern crate panic_dcc;
 use core::{mem, ops, ptr};
 
 use cortex_r::gic::{ICC, ICD};
-use dcc::dprintln;
+use arm_dcc::dprintln;
 use zup::IPI;
 use zup_rt::{entry, interrupt};
 

@@ -36,7 +36,7 @@
 
 extern crate panic_dcc;
 
-use dcc::dprintln;
+use arm_dcc::dprintln;
 use rtfm::app;
 
 #[app(cores = 2)]

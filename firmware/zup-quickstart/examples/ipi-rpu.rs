@@ -29,7 +29,7 @@ use cortex_r::{
     asm,
     gic::{ICC, ICD},
 };
-use dcc::dprintln;
+use arm_dcc::dprintln;
 use zup::IPI;
 use zup_rt::{entry, interrupt};
 
