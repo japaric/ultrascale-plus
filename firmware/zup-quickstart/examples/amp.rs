@@ -25,6 +25,7 @@
 //! ```
 
 #![feature(maybe_uninit)]
+#![feature(maybe_uninit_ref)]
 #![no_main]
 #![no_std]
 
