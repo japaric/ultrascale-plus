@@ -30,7 +30,7 @@ fn main() {
             p.instances.iter().filter_map(move |(name, address)| {
                 // HACK we don't generate all peripherals because the generated crate would take too
                 // long to compile and require too much RAM (12+ GB)
-                const WHITELIST: &[&str] = &["GPIO", "IPI"];
+                const WHITELIST: &[&str] = &["GPIO", "IPI", "TTC0"];
 
                 if !WHITELIST.contains(&&*name.to_uppercase()) {
                     return None;
@@ -44,6 +44,13 @@ fn main() {
                         p.registers
                             .iter()
                             .filter_map(|r| {
+                                let rem = r.width % 8;
+                                let width = if rem == 0 {
+                                    r.width
+                                } else {
+                                    r.width + 8 - rem
+                                };
+
                                 if r.width > 32 {
                                     // XXX ignore 64-bit registers for now
                                     return None;
@@ -59,7 +66,7 @@ fn main() {
                                     ptr::write(&mut info.derived_from, None);
                                     ptr::write(&mut info.description, r.description.clone());
                                     ptr::write(&mut info.address_offset, r.address);
-                                    ptr::write(&mut info.size, Some(u32::from(r.width)));
+                                    ptr::write(&mut info.size, Some(u32::from(width)));
                                     // TODO
                                     ptr::write(&mut info.access, None);
                                     ptr::write(&mut info.reset_value, Some(r.reset_value as u32));
