@@ -8,14 +8,57 @@ pub use zup_rtfm_macros::app;
 #[doc(hidden)]
 pub mod export;
 
+pub struct Instant(i32);
+
+impl Instant {
+    pub fn now() -> Instant {
+        unsafe { Instant((*export::TTC0::ptr()).counter_value_1.read().bits() as i32) }
+    }
+
+    pub fn checked_duration_since(&self, earlier: Instant) -> Option<Duration> {
+        let diff = self.0 - earlier.0;
+
+        if diff >= 0 {
+            Some(Duration(diff as u32))
+        } else {
+            None
+        }
+    }
+
+    pub fn duration_since(&self, earlier: Instant) -> Duration {
+        self.checked_duration_since(earlier).unwrap()
+    }
+}
+
+impl fmt::Debug for Instant {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_tuple("Instant").field(&self.0).finish()
+    }
+}
+
+impl ops::Sub<Instant> for Instant {
+    type Output = Duration;
+
+    fn sub(self, other: Instant) -> Duration {
+        self.duration_since(other)
+    }
+}
+
+pub struct Duration(u32);
+
+impl Duration {
+    /// Returns the total number of clock cycles contained by this `Duration`
+    pub fn as_cycles(&self) -> u32 {
+        self.0
+    }
+}
+
 pub trait Mutex {
     /// Data protected by the mutex
     type T;
 
     /// Creates a critical section and grants temporary access to the protected data
-    fn lock<R, F>(&mut self, f: F) -> R
-    where
-        F: FnOnce(&mut Self::T) -> R;
+    fn lock<R>(&mut self, f: impl FnOnce(&mut Self::T) -> R) -> R;
 }
 
 impl<'a, M> Mutex for &'a mut M
@@ -24,10 +67,7 @@ where
 {
     type T = M::T;
 
-    fn lock<R, F>(&mut self, f: F) -> R
-    where
-        F: FnOnce(&mut Self::T) -> R,
-    {
+    fn lock<R>(&mut self, f: impl FnOnce(&mut Self::T) -> R) -> R {
         (**self).lock(f)
     }
 }
@@ -40,10 +80,7 @@ pub struct Exclusive<'a, T>(pub &'a mut T);
 impl<'a, T> Mutex for Exclusive<'a, T> {
     type T = T;
 
-    fn lock<R, F>(&mut self, f: F) -> R
-    where
-        F: FnOnce(&mut Self::T) -> R,
-    {
+    fn lock<R>(&mut self, f: impl FnOnce(&mut Self::T) -> R) -> R {
         f(self.0)
     }
 }

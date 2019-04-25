@@ -3,6 +3,7 @@
 //! Expected output:
 //!
 //! ```
+//! init
 //! IRQ(ICCIAR { cpuid: 0, ackintid: 0 })
 //! foo
 //! bar(0)
@@ -11,49 +12,54 @@
 //! bar(1)
 //! baz(2, 3)
 //! ~IRQ(ICCIAR { cpuid: 0, ackintid: 0 })
-//! IRQ(ICCIAR { cpuid: 0, ackintid: 0 })
-//! ~IRQ(ICCIAR { cpuid: 0, ackintid: 0 })
+//! idle
 //! ```
 
-#![feature(maybe_uninit)]
-#![feature(maybe_uninit_ref)]
 #![no_main]
 #![no_std]
 
-extern crate panic_dcc;
-
 use arm_dcc::dprintln;
+use panic_dcc as _;
 
 #[rtfm::app]
 const APP: () = {
     #[init(spawn = [foo])]
-    fn init() {
-        spawn.foo(/* no message */).unwrap();
+    fn init(c: init::Context) {
+        c.spawn.foo(/* no message */).unwrap();
+
+        dprintln!("init");
+    }
+
+    #[idle]
+    fn idle(_: idle::Context) -> ! {
+        dprintln!("idle");
+
+        loop {}
     }
 
     #[task(spawn = [bar])]
-    fn foo() {
+    fn foo(c: foo::Context) {
         static mut COUNT: u32 = 0;
 
         dprintln!("foo");
 
-        spawn.bar(*COUNT).unwrap();
+        c.spawn.bar(*COUNT).unwrap();
         *COUNT += 1;
     }
 
     #[task(spawn = [baz])]
-    fn bar(x: u32) {
+    fn bar(c: bar::Context, x: u32) {
         dprintln!("bar({})", x);
 
-        spawn.baz(x + 1, x + 2).unwrap();
+        c.spawn.baz(x + 1, x + 2).unwrap();
     }
 
     #[task(spawn = [foo])]
-    fn baz(x: u32, y: u32) {
+    fn baz(c: baz::Context, x: u32, y: u32) {
         dprintln!("baz({}, {})", x, y);
 
         if x + y <= 4 {
-            spawn.foo().unwrap();
+            c.spawn.foo().unwrap();
         }
     }
 };

@@ -1,7 +1,7 @@
-  .section .ResetTrampoline, "ax"
-  .type ResetTrampoline, %function
-  .global ResetTrampoline
-ResetTrampoline:
+  .section .start, "ax"
+  .type start, %function
+  .global start
+start:
   /* initialize registers */
   mov r0,#0
   mov r1,#0
@@ -31,7 +31,7 @@ ResetTrampoline:
   .type Vectors, %function
   .global Vectors
 Vectors:
-  ldr pc,=ResetTrampoline           /* 0x00 */
+  ldr pc,=start                     /* 0x00 */
   ldr pc,=UndefinedTrampoline       /* 0x04 */
   ldr pc,=SVCTrampoline             /* 0x08 */
   ldr pc,=PrefetchAbortTrampoline   /* 0x0C */

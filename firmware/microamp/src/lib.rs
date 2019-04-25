@@ -1,28 +1,70 @@
+#![recursion_limit = "128"]
+
 extern crate proc_macro;
 
 use proc_macro::TokenStream;
 
 use proc_macro2::Span;
-use syn::{parse, parse_macro_input};
-
-use crate::syntax::Amp;
-
-mod codegen;
-mod syntax;
+use quote::quote;
+use syn::{parse, parse_macro_input, ItemStatic};
 
 #[proc_macro_attribute]
-pub fn app(args: TokenStream, input: TokenStream) -> TokenStream {
-    // Parse
+pub fn shared(args: TokenStream, input: TokenStream) -> TokenStream {
     if !args.is_empty() {
-        return parse::Error::new(Span::call_site(), "`#[amp]` takes no arguments")
+        return parse::Error::new(Span::call_site(), "`#[shared]` takes no arguments")
             .to_compile_error()
             .into();
     }
-    let items = parse_macro_input!(input as syntax::Input).items;
-    let amp = match Amp::parse(items) {
-        Err(e) => return e.to_compile_error().into(),
-        Ok(amp) => amp,
-    };
 
-    codegen::amp(&amp)
+    let item = parse_macro_input!(input as ItemStatic);
+
+    let attrs = &item.attrs;
+    let expr = &item.expr;
+    let ident = &item.ident;
+    let ty = &item.ty;
+    let vis = &item.vis;
+    if item.mutability.is_some() {
+        quote!(
+            #(#attrs)*
+            #[cfg(microamp)]
+            #[link_section = ".shared"]
+            #[no_mangle]
+            static mut #ident: #ty = #expr;
+
+            #[cfg(not(microamp))]
+            extern "C" {
+                #vis static mut #ident: #ty;
+            }
+        )
+        .into()
+    } else {
+        quote!(
+            #(#attrs)*
+            #[cfg(microamp)]
+            #[link_section = ".shared"]
+            #[no_mangle]
+            static #ident: #ty = #expr;
+
+            #[cfg(not(microamp))]
+            #vis struct #ident;
+
+            #[cfg(not(microamp))]
+            impl core::ops::Deref for #ident {
+                type Target = #ty;
+
+                fn deref(&self) -> &#ty {
+                    #[inline(always)]
+                    fn assert<T>() where T: Sync {}
+                    assert::<#ty>();
+
+                    extern "C" {
+                        static #ident: #ty;
+                    }
+
+                    unsafe { &#ident }
+                }
+            }
+        )
+        .into()
+    }
 }

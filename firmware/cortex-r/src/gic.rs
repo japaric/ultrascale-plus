@@ -1,9 +1,4 @@
-use core::{
-    fmt,
-    marker::PhantomData,
-    ops::Deref,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use core::{fmt, marker::PhantomData, ops::Deref};
 
 pub mod icc;
 pub mod icd;
@@ -17,27 +12,16 @@ pub struct ICD {
 }
 
 impl ICD {
-    pub fn take() -> Option<Self> {
-        /// FIXME not cross-core safe unless this static is placed in `.shared`
-        static TAKEN: AtomicBool = AtomicBool::new(false);
-
-        if TAKEN.compare_and_swap(false, true, Ordering::AcqRel) {
-            None
-        } else {
-            Some(ICD { _0: PhantomData })
-        }
-    }
-
     pub unsafe fn steal() -> Self {
         ICD { _0: PhantomData }
     }
 
-    pub fn disable(&mut self) {
-        unsafe { self.ICDDCR.write(0) }
+    pub fn disable() {
+        unsafe { Self::steal().ICDDCR.write(0) }
     }
 
-    pub fn enable(&mut self) {
-        unsafe { self.ICDDCR.write(1) }
+    pub fn enable() {
+        unsafe { Self::steal().ICDDCR.write(1) }
     }
 
     pub fn unmask(n: u16) {
@@ -107,22 +91,12 @@ pub struct ICC {
 }
 
 impl ICC {
-    pub fn take() -> Option<Self> {
-        static TAKEN: AtomicBool = AtomicBool::new(false);
-
-        if TAKEN.compare_and_swap(false, true, Ordering::AcqRel) {
-            None
-        } else {
-            Some(ICC { _0: PhantomData })
-        }
-    }
-
     pub unsafe fn steal() -> Self {
         ICC { _0: PhantomData }
     }
 
-    pub fn disable(&mut self) {
-        unsafe { self.ICCICR.write(0) }
+    pub fn disable() {
+        unsafe { Self::steal().ICCICR.write(0) }
     }
 
     pub fn get_icciar() -> ICCIAR {
@@ -144,6 +118,11 @@ impl ICC {
     pub unsafe fn set_iccpmr(threshold: u8) {
         asm!("" : : : "memory" : "volatile");
         Self::steal().ICCPMR.write(u32::from(threshold));
+        asm!("" : : : "memory" : "volatile");
+    }
+
+    pub unsafe fn set_iccicr(x: u32) {
+        Self::steal().ICCICR.write(x);
     }
 }
 

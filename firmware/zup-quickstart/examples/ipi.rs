@@ -15,54 +15,55 @@ extern crate panic_dcc;
 
 use core::{mem, ops, ptr};
 
-use cortex_r::gic::{ICC, ICD};
 use arm_dcc::dprintln;
+use cortex_r::gic::{ICC, ICD};
 use zup::IPI;
 use zup_rt::{entry, interrupt};
 
 #[entry]
-unsafe fn main() -> ! {
-    const IPI_CH1: u16 = 65;
+fn main() -> ! {
+    unsafe {
+        const IPI_CH1: u16 = 65;
 
-    let mut icd = ICD::take().unwrap();
-    let mut icc = ICC::take().unwrap();
-    let ipi = zup::Peripherals::steal().IPI;
+        let icd = ICD::steal();
+        let icc = ICC::steal();
+        let ipi = zup::Peripherals::steal().IPI;
 
-    // disable interrupt routing and signaling during configuration
-    icd.disable();
-    icc.disable();
+        // disable interrupt routing and signaling during configuration
+        ICD::disable();
+        ICC::disable();
 
-    // unmask SPI 65
-    ICD::unmask(IPI_CH1);
+        // unmask SPI 65
+        ICD::unmask(IPI_CH1);
 
-    // route SPI 65 to R5#0
-    icd.ICDIPTR_rw[usize::from(IPI_CH1) - 32].write(1);
+        // route SPI 65 to R5#0
+        icd.ICDIPTR_rw[usize::from(IPI_CH1) - 32].write(1);
 
-    // set priority mask to the lowest priority
-    icc.ICCPMR.write(248);
+        // set priority mask to the lowest priority
+        icc.ICCPMR.write(248);
 
-    // set the priority of IPI_CH1 to the second lowest priority
-    icd.ICDIPR[usize::from(IPI_CH1)].write(240);
+        // set the priority of IPI_CH1 to the second lowest priority
+        icd.ICDIPR[usize::from(IPI_CH1)].write(240);
 
-    // enable interrupt signaling
-    icc.ICCICR
-        .write((1 << 1) /* EnableNS */ | (1 << 0) /* EnableS */);
+        // enable interrupt signaling
+        icc.ICCICR
+            .write((1 << 1) /* EnableNS */ | (1 << 0) /* EnableS */);
 
-    // enable interrupt routing
-    icd.enable();
+        // enable interrupt routing
+        ICD::enable();
 
-    // enable receiving interrupts from channel 1
-    ipi.ch1_ier.write(|w| w.ch1().set_bit());
+        // enable receiving interrupts from channel 1
+        ipi.ch1_ier.write(|w| w.ch1().set_bit());
 
-    // write message
-    Buffers1[0].set_request(42);
+        // write message
+        Buffers1[0].set_request(42);
 
-    // trigger IPI
-    ipi.ch1_trig.write(|w| w.ch1().set_bit());
+        // trigger IPI
+        ipi.ch1_trig.write(|w| w.ch1().set_bit());
 
-    // unmask IRQ
-    cortex_r::enable_irq();
-
+        // unmask IRQ
+        cortex_r::enable_irq();
+    }
     loop {}
 }
 

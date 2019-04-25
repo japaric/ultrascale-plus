@@ -23,16 +23,14 @@ required-features = ["pac"]
 [dependencies]
 cortex-r = { path = "../cortex-r" }
 panic-dcc = { git = "https://github.com/rust-embedded/arm-dcc" }
+panic-halt = "0.2.0"
 zup = { path = "../zup", optional = true }
 zup-rt = { path = "../zup-rt" }
-
-[dev-dependencies]
-microamp = { path = "../microamp" }
-zup-rtfm = { path = "../zup-rtfm" }
+zup-rtfm = { path = "../zup-rtfm", optional = true }
 
 [dev-dependencies.arm-dcc]
+features = ["inline-asm"]
 git = "https://github.com/rust-embedded/arm-dcc"
-# features = ["inline-asm"]
 
 [features]
-pac = ["zup"]
+pac = ["zup", "zup-rtfm"]
