@@ -1,46 +1,54 @@
-use std::collections::HashSet;
+use std::collections::{
+    hash_map::{Entry, HashMap},
+    HashSet,
+};
 
 use proc_macro2::Span;
 use syn::parse;
 
-use crate::syntax::App;
-
-/// Number of SGIs provided by the hardware
-const NSGIS: usize = 16;
+use crate::{syntax::App, NSGIS};
 
 pub fn app(app: &App) -> parse::Result<()> {
-    // Check that all referenced resources have been declared and that they are accessible from that
-    // core
-    for (ctxt, res) in
+    // Check that all referenced resources have been declared and that `static mut` resources are
+    // *not* shared between cores
+    let mut mut_resources = HashMap::new();
+    for (core, name) in
         app.mains
             .iter()
             .zip(0..)
-            .flat_map(|(main, core)| {
+            .flat_map(move |(main, core)| {
                 main.init
-                    .args
-                    .resources
                     .iter()
-                    .map(move |res| (core, res))
+                    .flat_map(move |init| init.args.resources.iter().map(move |res| (core, res)))
                     .chain(main.idle.iter().flat_map(move |idle| {
                         idle.args.resources.iter().map(move |res| (core, res))
                     }))
             })
+            .chain(app.interrupts.values().flat_map(|interrupt| {
+                let core = interrupt.args.core;
+                interrupt.args.resources.iter().map(move |res| (core, res))
+            }))
             .chain(app.tasks.values().flat_map(|task| {
-                let core = task.core;
+                let core = task.args.core;
                 task.args.resources.iter().map(move |res| (core, res))
             }))
     {
-        let span = res.span();
-        if let Some(res) = app.resources.get(res) {
-            if let Some(owner) = res.core {
-                if ctxt != owner {
-                    return Err(parse::Error::new(
-                        span,
-                        "this resource can NOT be accessed from this context",
-                    ));
+        let span = name.span();
+        if let Some(res) = app.resources.get(name) {
+            if res.mutability.is_some() {
+                match mut_resources.entry(name) {
+                    Entry::Occupied(entry) => {
+                        if *entry.get() != core {
+                            return Err(parse::Error::new(
+                                span,
+                                "`static mut` resources can NOT be accessed from different cores",
+                            ));
+                        }
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(core);
+                    }
                 }
-            } else {
-                // `#[shared]` statics can be accessed from any core
             }
         } else {
             return Err(parse::Error::new(
@@ -50,7 +58,7 @@ pub fn app(app: &App) -> parse::Result<()> {
         }
     }
 
-    for init in app.mains.iter().map(|main| &main.init) {
+    for init in app.mains.iter().filter_map(|main| main.init.as_ref()) {
         // Check that late resources have not been assigned to `init`
         for res in &init.args.resources {
             if app.resources.get(res).unwrap().expr.is_none() {
@@ -62,24 +70,72 @@ pub fn app(app: &App) -> parse::Result<()> {
         }
     }
 
-    // Check that all late resources have been initialized in `#[init]`
-    for (core, res) in app.resources.iter().filter_map(|(name, res)| {
-        if res.expr.is_none() {
-            Some((res.core.expect("BUG: `#[shared]` late resource"), name))
+    // Check that all late resources are covered by `init::LateResources`
+    let mut late_resources = app
+        .resources
+        .iter()
+        .filter_map(|(name, res)| if res.expr.is_none() { Some(name) } else { None })
+        .collect::<HashSet<_>>();
+    if !late_resources.is_empty() {
+        if app.cores == 1 {
+            // the only core will initialize all late resources
         } else {
-            None
-        }
-    }) {
-        if app.mains[usize::from(core)]
-            .init
-            .assigns
-            .iter()
-            .all(|assign| assign.left != *res)
-        {
-            return Err(parse::Error::new(
-                res.span(),
-                "late resources MUST be initialized at the end of `init`",
-            ));
+            // this core will initialize the "rest" of late resources
+            let mut rest = None;
+
+            let mut initialized = HashMap::new();
+            for (core, init) in app.mains.iter().enumerate().filter_map(|(i, main)| {
+                if let Some(init) = main.init.as_ref() {
+                    if init.returns_late_resources {
+                        Some((i, init))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }) {
+                if !init.args.late.is_empty() {
+                    for res in &init.args.late {
+                        if !late_resources.contains(&res) {
+                            return Err(parse::Error::new(
+                                res.span(),
+                                "this is not a late resource",
+                            ));
+                        }
+
+                        if let Some(other) = initialized.get(res) {
+                            return Err(parse::Error::new(
+                                res.span(),
+                                &format!("this resource will be initialized by core {}", other),
+                            ));
+                        } else {
+                            late_resources.remove(res);
+                            initialized.insert(res, core);
+                        }
+                    }
+                } else if let Some(rest) = rest {
+                    return Err(parse::Error::new(
+                        Span::call_site(),
+                        &format!(
+                            "unclear how initialization of late resources is split between \
+                             cores {} and {}",
+                            rest, core,
+                        ),
+                    ));
+                } else {
+                    rest = Some(core);
+                }
+            }
+
+            if let Some(res) = late_resources.iter().next() {
+                if rest.is_none() {
+                    return Err(parse::Error::new(
+                        res.span(),
+                        "this resource is not being initialized",
+                    ));
+                }
+            }
         }
     }
 
@@ -89,11 +145,15 @@ pub fn app(app: &App) -> parse::Result<()> {
         .iter()
         .flat_map(|main| {
             main.init
-                .args
-                .spawn
                 .iter()
+                .flat_map(|init| &init.args.spawn)
                 .chain(main.idle.iter().flat_map(|idle| &idle.args.spawn))
         })
+        .chain(
+            app.interrupts
+                .values()
+                .flat_map(|interrupt| &interrupt.args.spawn),
+        )
         .chain(app.tasks.values().flat_map(|task| &task.args.spawn))
     {
         if !app.tasks.contains_key(task) {
@@ -110,7 +170,7 @@ pub fn app(app: &App) -> parse::Result<()> {
             .tasks
             .values()
             .filter_map(|task| {
-                if task.core == core {
+                if task.args.core == core {
                     Some(task.args.priority)
                 } else {
                     None
@@ -119,13 +179,22 @@ pub fn app(app: &App) -> parse::Result<()> {
             .collect::<HashSet<_>>()
             .len();
 
-        if ndispatchers > NSGIS {
+        let used_sgis = app
+            .interrupts
+            .keys()
+            .filter(|name| {
+                let name = name.to_string();
+
+                name.starts_with("SG")
+                    && name[2..].parse::<u8>().map(|n| n < NSGIS).unwrap_or(false)
+            })
+            .count();
+
+        if ndispatchers + usize::from(used_sgis) > usize::from(NSGIS) {
             return Err(parse::Error::new(
                 Span::call_site(),
-                &*format!(
-                    "It's not possible to have more than {} different priority levels for tasks",
-                    NSGIS,
-                ),
+                "Not enough free Software-Generated Interrupts (SGI) to \
+                 dispatch all task priorities",
             ));
         }
     }

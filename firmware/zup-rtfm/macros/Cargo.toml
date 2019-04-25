@@ -1,20 +1,16 @@
 [package]
-name = "zup-rtfm-macros"
-version = "0.1.0"
 authors = ["Jorge Aparicio <jorge@japaric.io>"]
 edition = "2018"
+name = "zup-rtfm-macros"
+version = "0.1.0"
 
 [lib]
 proc-macro = true
 
 [dependencies]
-quote = "0.6.10"
-proc-macro2 = "0.4.24"
-
-[dependencies.rand]
-default-features = false
-version = "0.6.1"
+quote = "0.6.12"
+proc-macro2 = "0.4.28"
 
 [dependencies.syn]
 features = ["extra-traits", "full"]
-version = "0.15.23"
+version = "0.15.32"

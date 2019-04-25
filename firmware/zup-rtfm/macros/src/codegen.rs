@@ -1,1199 +1,1594 @@
 use proc_macro::TokenStream;
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::atomic::{AtomicUsize, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use proc_macro2::Span;
 use quote::quote;
-use rand::{Rng, SeedableRng};
-use syn::{ArgCaptured, Ident, IntSuffix, LitInt};
+use syn::{ArgCaptured, Attribute, Ident, IntSuffix, LitInt};
 
 use crate::{
     analyze::{Analysis, Ownership},
-    syntax::{App, Idents, Idle, Init, Static},
-    PRIORITY_BITS,
+    syntax::{App, Idents},
 };
 
-// NOTE to avoid polluting the user namespaces we map some identifiers to pseudo-hygienic names.
-// In some instances we also use the pseudo-hygienic names for safety, for example the user should
-// not modify the priority field of resources.
-type Aliases = HashMap<Ident, Ident>;
+pub fn app(name: &Ident, app: &App, analysis: &Analysis) -> TokenStream {
+    let (const_app_resources, mod_resources) = resources(app, analysis);
 
-struct Context {
-    dispatchers: Vec<BTreeMap<u8, Dispatcher>>,
-    // Alias (`fn`)
-    idle: Ident,
-    // Alias (`fn`)
-    init: Ident,
-    // Alias
-    priority: Ident,
-    /// Task -> Alias (`struct`)
-    resources: HashMap<Kind, Resources>,
-    // For non-singletons this maps the resource name to its `static mut` variable name
-    statics: Aliases,
-    tasks: HashMap<Ident, Task>,
+    // let (
+    //     const_app_exceptions,
+    //     exception_mods,
+    //     exception_locals,
+    //     exception_resources,
+    //     user_exceptions,
+    // ) = exceptions(app, analysis);
+
+    let (
+        const_app_interrupts,
+        interrupt_mods,
+        interrupt_locals,
+        interrupt_resources,
+        user_interrupts,
+    ) = interrupts(app, analysis);
+
+    let (const_app_tasks, task_mods, task_locals, task_resources, user_tasks) =
+        tasks(app, analysis);
+
+    let const_app_dispatchers = dispatchers(&app, analysis);
+
+    let const_app_spawn = spawn(app, analysis);
+
+    // let const_app_tq = timer_queue(app, analysis);
+
+    // let const_app_schedule = schedule(app);
+
+    let assertion_stmts = assertions(app, analysis);
+
+    let (pre_init_stmts, const_app_pre_init) = pre_init(&app, analysis);
+
+    let (
+        const_app_init,
+        mod_init,
+        init_locals,
+        init_resources,
+        init_late_resources,
+        user_init,
+        call_init,
+    ) = init(app, analysis);
+
+    let post_init_stmts = post_init(&app, analysis);
+
+    let (const_app_idle, mod_idle, idle_locals, idle_resources, user_idle, call_idle) =
+        idle(app, analysis);
+
+    quote!(
+        #(#user_init)*
+
+        #(#user_idle)*
+
+        // #(#user_exceptions)*
+
+        #(#user_interrupts)*
+
+        #(#user_tasks)*
+
+        #mod_resources
+
+        #(#init_locals)*
+
+        #(#init_resources)*
+
+        #(#init_late_resources)*
+
+        #(#mod_init)*
+
+        #(#idle_locals)*
+
+        #(#idle_resources)*
+
+        #(#mod_idle)*
+
+        // #(#exception_locals)*
+
+        // #(#exception_resources)*
+
+        // #(#exception_mods)*
+
+        #(#interrupt_locals)*
+
+        #(#interrupt_resources)*
+
+        #(#interrupt_mods)*
+
+        #(#task_locals)*
+
+        #(#task_resources)*
+
+        #(#task_mods)*
+
+        /// Implementation details
+        const #name: () = {
+            #(#const_app_resources)*
+
+            #(#const_app_pre_init)*
+
+            #(#const_app_init)*
+
+            #(#const_app_idle)*
+
+            // #(#const_app_exceptions)*
+
+            #(#const_app_interrupts)*
+
+            #(#const_app_dispatchers)*
+
+            #(#const_app_tasks)*
+
+            #(#const_app_spawn)*
+
+            // #(#const_app_tq)*
+
+            // #(#const_app_schedule)*
+
+            #[link_section = ".main"]
+            #[no_mangle]
+            unsafe fn main() -> ! {
+                #(#assertion_stmts)*
+
+                #(#pre_init_stmts)*
+
+                #(#call_init)*
+
+                #(#post_init_stmts)*
+
+                #(#call_idle)*
+
+                #[allow(unreachable_code)]
+                loop {}
+            }
+        };
+    )
+    .into()
 }
 
-struct Dispatcher {
-    enum_: Ident,
-    ready_queue: Ident,
-}
+/* Main functions */
+fn resources(
+    app: &App,
+    analysis: &Analysis,
+) -> (
+    // const_app
+    Vec<proc_macro2::TokenStream>,
+    // mod_resources
+    proc_macro2::TokenStream,
+) {
+    let mut const_app = vec![];
+    let mut mod_resources = vec![];
 
-struct Task {
-    alias: Ident,
-    local: Option<Spawn>,
-    shared: Option<Spawn>,
-}
+    for (name, core) in &analysis.locations {
+        let res = &app.resources[name];
 
-struct Spawn {
-    f: Ident,
-    inputs: Ident,
-    free_queue: Ident,
-}
+        let attrs = &res.attrs;
+        let ty = &res.ty;
+        let cfgs = &res.cfgs;
 
-impl Default for Context {
-    fn default() -> Self {
-        Context {
-            dispatchers: vec![],
-            idle: mk_ident(Some("idle")),
-            init: mk_ident(Some("init")),
-            priority: mk_ident(None),
-            resources: HashMap::new(),
-            statics: Aliases::new(),
-            tasks: HashMap::new(),
+        let cfg_core = core.and_then(|core| app.cfg_core(core));
+        let link_section = if core.is_some() {
+            link_local(app, "data")
+        } else {
+            Some(quote!(#[rtfm::export::shared]))
+        };
+
+        if let Some(expr) = res.expr.as_ref() {
+            const_app.push(quote!(
+                #(#attrs)*
+                #(#cfgs)*
+                #cfg_core
+                #link_section
+                static mut #name: #ty = #expr;
+            ));
+        } else {
+            const_app.push(quote!(
+                #(#attrs)*
+                #(#cfgs)*
+                #cfg_core
+                #link_section
+                static mut #name: rtfm::export::MaybeUninit<#ty> =
+                    rtfm::export::MaybeUninit::uninit();
+            ));
+        }
+
+        if let Some(Ownership::Shared { ceiling }) = analysis.ownerships.get(name) {
+            let ptr = if res.expr.is_none() {
+                quote!(#name.as_mut_ptr())
+            } else {
+                quote!(&mut #name)
+            };
+
+            mod_resources.push(quote!(
+                #cfg_core
+                pub struct #name<'a> {
+                    priority: &'a Priority,
+                }
+
+                #cfg_core
+                impl<'a> #name<'a> {
+                    #[inline(always)]
+                    pub unsafe fn new(priority: &'a Priority) -> Self {
+                        #name { priority }
+                    }
+
+                    #[inline(always)]
+                    pub unsafe fn priority(&self) -> &Priority {
+                        self.priority
+                    }
+                }
+            ));
+
+            const_app.push(impl_mutex(
+                cfgs,
+                cfg_core,
+                true,
+                name,
+                quote!(#ty),
+                *ceiling,
+                ptr,
+            ));
         }
     }
-}
 
-struct Resources {
-    alias: Ident,
-    decl: proc_macro2::TokenStream,
-}
-
-pub fn app(app: &App, analysis: &Analysis) -> TokenStream {
-    let mut ctxt = Context::default();
-
-    let mut items = vec![];
-
-    items.push(resources(&mut ctxt, &app, analysis));
-
-    items.push(tasks(&mut ctxt, &app, analysis));
-
-    items.push(dispatchers(&mut ctxt, &app, analysis));
-
-    items.push(spawn(&mut ctxt, app, analysis));
-
-    for (main, core) in app.mains.iter().zip(0..) {
-        let cfg = mk_cfg(app.cores, Some(core));
-
-        let pre_init = pre_init(&ctxt, core, app, analysis);
-        items.push(init(&mut ctxt, &cfg, &main.init, &app, analysis));
-
-        let (idle_fn, idle_expr) = idle(&mut ctxt, &cfg, &main.idle, &app, analysis);
-        items.push(idle_fn);
-
-        let init = &ctxt.init;
-        items.push(quote!(
-            #[allow(unsafe_code)]
-            #[doc(hidden)]
-            #[rtfm::export::entry]
-            #cfg
-            unsafe fn main() -> ! {
-                #pre_init
-
-                #init();
-
-                rtfm::export::enable_irq();
-
-                #idle_expr
-            }
-        ))
-    }
-
-    if app.cores == 1 {
-        quote!(#(#items)*).into()
+    let mod_resources = if mod_resources.is_empty() {
+        quote!()
     } else {
         quote!(
-            #[rtfm::export::amp]
-            const AMP: () = {
-                #(#items)*
-            };
-        )
-        .into()
-    }
-}
+            mod resources {
+                use rtfm::export::Priority;
 
-fn resources(ctxt: &mut Context, app: &App, analysis: &Analysis) -> proc_macro2::TokenStream {
-    let mut items = vec![];
-    let mut modules = (0..app.cores).map(|_| vec![]).collect::<Vec<_>>();
-
-    for (name, res) in &app.resources {
-        if let Some(core) = res.core {
-            let cfg = mk_cfg(app.cores, Some(core));
-
-            let attrs = &res.attrs;
-            let ty = &res.ty;
-            let expr = &res.expr;
-
-            let alias = mk_ident(None);
-            let symbol = format!("{}::{}", name, alias);
-
-            items.push(
-                expr.as_ref()
-                    .map(|expr| {
-                        quote!(
-                            #(#attrs)*
-                            #[doc = #symbol]
-                            #cfg
-                            static mut #alias: #ty = #expr;
-                        )
-                    })
-                    .unwrap_or_else(|| {
-                        quote!(
-                            #(#attrs)*
-                            #[doc = #symbol]
-                            #cfg
-                            static mut #alias: rtfm::export::MaybeUninit<#ty> =
-                                rtfm::export::MaybeUninit::uninitialized();
-                        )
-                    }),
-            );
-
-            if let Some(Ownership::Shared { ceiling }) = analysis.ownerships.get(name) {
-                // NOTE `#[shared]` statics (`core = None`) are not resources
-                if res.mutability.is_some() && res.core.is_some() {
-                    let ptr = if res.expr.is_none() {
-                        quote!(unsafe { #alias.get_mut() })
-                    } else {
-                        quote!(unsafe { &mut #alias })
-                    };
-
-                    items.push(mk_resource(
-                        ctxt,
-                        &cfg,
-                        name,
-                        quote!(#ty),
-                        *ceiling,
-                        ptr,
-                        Some(&mut modules[usize::from(core)]),
-                    ));
-                }
+                #(#mod_resources)*
             }
+        )
+    };
 
-            ctxt.statics.insert(name.clone(), alias);
-        } else {
-            // TODO implement something here?
-        }
-    }
-
-    for (module, core) in modules.into_iter().zip(0..) {
-        if !module.is_empty() {
-            let cfg = mk_cfg(app.cores, Some(core));
-
-            items.push(quote!(
-                /// Resource proxies
-                #cfg
-                pub mod resources {
-                    #(#module)*
-                }
-            ));
-        }
-    }
-
-    quote!(#(#items)*)
+    (const_app, mod_resources)
 }
 
-fn tasks(ctxt: &mut Context, app: &App, analysis: &Analysis) -> proc_macro2::TokenStream {
-    let mut items = vec![];
+fn interrupts(
+    app: &App,
+    analysis: &Analysis,
+) -> (
+    // const_app
+    Vec<proc_macro2::TokenStream>,
+    // interrupt_mods
+    Vec<proc_macro2::TokenStream>,
+    // interrupt_locals
+    Vec<proc_macro2::TokenStream>,
+    // interrupt_resources
+    Vec<proc_macro2::TokenStream>,
+    // user_exceptions
+    Vec<proc_macro2::TokenStream>,
+) {
+    let mut const_app = vec![];
+    let mut mods = vec![];
+    let mut locals_structs = vec![];
+    let mut resources_structs = vec![];
+    let mut user_code = vec![];
 
-    // first pass to generate buffers (statics and resources) and spawn aliases
-    for (name, task) in &app.tasks {
-        let cfg = mk_cfg(app.cores, Some(task.core));
+    for (name, interrupt) in &app.interrupts {
+        let priority = &interrupt.args.priority;
+        let symbol = interrupt.args.binds(name);
 
-        let inputs = &task.inputs;
-        let ty = tuple_ty(inputs);
+        const_app.push(quote!(
+            #[allow(non_snake_case)]
+            #[no_mangle]
+            unsafe fn #symbol() {
+                const PRIORITY: u8 = #priority;
 
-        let task_ = &analysis.tasks[name];
-        let mut local = None;
-        if task_.local.capacity != 0 {
-            let free_queue = mk_ident(None);
-            let inputs = mk_ident(None);
+                // check that this interrupt exists
+                let _ = rtfm::export::Interrupt::#symbol;
 
-            let cap_lit = mk_capacity_literal(task_.local.capacity);
-            let cap_ty = mk_typenum_capacity(task_.local.capacity, true);
-
-            let resource = mk_resource(
-                ctxt,
-                &cfg,
-                &free_queue,
-                quote!(rtfm::export::FreeQueue<#cap_ty>),
-                task_.local.ceiling,
-                quote!(&mut #free_queue),
-                None,
-            );
-
-            let i_symbol = format!("{}::LOCAL_INPUTS::{}", name, inputs);
-            let fq_symbol = format!("{}::LOCAL_FREE_QUEUE::{}", name, free_queue);
-            items.push(quote!(
-                #[doc = #i_symbol]
-                #cfg
-                static mut #inputs: rtfm::export::MaybeUninit<[#ty; #cap_lit]> =
-                    rtfm::export::MaybeUninit::uninitialized();
-
-                #[doc = #fq_symbol]
-                #cfg
-                static mut #free_queue: rtfm::export::FreeQueue<#cap_ty>
-                    = rtfm::export::FreeQueue::new();
-
-                #resource
-            ));
-
-            local = Some(Spawn {
-                f: mk_ident(None),
-                inputs,
-                free_queue,
-            })
-        }
-
-        let mut shared = None;
-        if task_.shared.capacity != 0 {
-            // these need to have consistent names across compilations or `#[shared]` won't work
-            // let free_queue = mk_ident(None);
-            // let inputs = mk_ident(None);
-            let free_queue = Ident::new(&format!("{}_SHARED_FREE_QUEUE", name), Span::call_site());
-            let inputs = Ident::new(&format!("{}_SHARED_INPUTS", name), Span::call_site());
-
-            let cap_lit = mk_capacity_literal(task_.shared.capacity);
-            let cap_ty = mk_typenum_capacity(task_.shared.capacity, true);
-
-            let resource = mk_resource(
-                ctxt,
-                &None,
-                &free_queue,
-                quote!(rtfm::export::FreeQueue<#cap_ty>),
-                task_.local.ceiling,
-                quote!(#free_queue.get_mut()),
-                None,
-            );
-
-            let i_symbol = format!("{}::SHARED_INPUTS::{}", name, inputs);
-            let fq_symbol = format!("{}::SHARED_FREE_QUEUE::{}", name, free_queue);
-            items.push(quote!(
-                #[doc = #i_symbol]
-                #[shared]
-                static mut #inputs: [#ty; #cap_lit] = ();
-
-                #[doc = #fq_symbol]
-                #[shared]
-                static mut #free_queue: rtfm::export::FreeQueue<#cap_ty> = ();
-
-                #resource
-            ));
-
-            shared = Some(Spawn {
-                f: mk_ident(None),
-                inputs,
-                free_queue,
-            })
-        }
-
-        let alias = mk_ident(None);
-        ctxt.tasks.insert(
-            name.clone(),
-            Task {
-                alias,
-                local,
-                shared,
-            },
-        );
-    }
-
-    // second pass to generate the actual task function
-    for (name, task) in &app.tasks {
-        let cfg = mk_cfg(app.cores, Some(task.core));
-
-        let prelude = prelude(
-            ctxt,
-            &cfg,
-            Kind::Task(name.clone()),
-            &task.args.resources,
-            &task.args.spawn,
-            app,
-            task.args.priority,
-            analysis,
-        );
-
-        // NOTE `module` needs to be called after `prelude`
-        items.push(module(
-            ctxt,
-            &cfg,
-            Kind::Task(name.clone()),
-            !task.args.spawn.is_empty(),
+                rtfm::export::run(PRIORITY, || {
+                    crate::#name(
+                        #name::Locals::new(),
+                        #name::Context::new(&rtfm::export::Priority::new(PRIORITY)),
+                    )
+                });
+            }
         ));
 
-        let alias = &ctxt.tasks[name].alias;
-        let inputs = &task.inputs;
-        let locals = mk_locals(&task.statics, false);
-        let stmts = &task.stmts;
-        let attrs = &task.attrs;
-        let unsafety = &task.unsafety;
-        items.push(quote!(
-            #(#attrs)*
-            #cfg
-            #unsafety fn #alias(#(#inputs,)*) {
-                #(#locals)*
+        let mut needs_lt = false;
+        if !interrupt.args.resources.is_empty() {
+            let (item, constructor) = resources_struct(
+                Kind::Interrupt(name.clone()),
+                interrupt.args.priority,
+                &mut needs_lt,
+                app,
+                analysis,
+            );
 
-                #prelude
+            resources_structs.push(item);
+
+            const_app.push(constructor);
+        }
+
+        mods.push(module(Kind::Interrupt(name.clone()), needs_lt, app));
+
+        let attrs = &interrupt.attrs;
+        let context = &interrupt.context;
+        let (locals, lets) = locals(Kind::Interrupt(name.clone()), app);
+        locals_structs.push(locals);
+        let stmts = &interrupt.stmts;
+        user_code.push(quote!(
+            #(#attrs)*
+            #[allow(non_snake_case)]
+            fn #name(__locals: #name::Locals, #context: #name::Context) {
+                use rtfm::Mutex as _;
+
+                #(#lets;)*
 
                 #(#stmts)*
             }
         ));
     }
 
-    quote!(#(#items)*)
+    (
+        const_app,
+        mods,
+        locals_structs,
+        resources_structs,
+        user_code,
+    )
 }
 
-fn dispatchers(ctxt: &mut Context, app: &App, analysis: &Analysis) -> proc_macro2::TokenStream {
-    let mut items = vec![];
+fn tasks(
+    app: &App,
+    analysis: &Analysis,
+) -> (
+    // const_app
+    Vec<proc_macro2::TokenStream>,
+    // task_mods
+    Vec<proc_macro2::TokenStream>,
+    // task_locals
+    Vec<proc_macro2::TokenStream>,
+    // task_resources
+    Vec<proc_macro2::TokenStream>,
+    // user_tasks
+    Vec<proc_macro2::TokenStream>,
+) {
+    let mut const_app = vec![];
+    let mut mods = vec![];
+    let mut locals_structs = vec![];
+    let mut resources_structs = vec![];
+    let mut user_code = vec![];
 
-    ctxt.dispatchers = (0..app.cores).map(|_| BTreeMap::new()).collect();
-    for (core, dispatchers) in analysis.dispatchers.iter().enumerate() {
-        let cfg = mk_cfg(app.cores, Some(core as u8));
+    for (name, task) in &app.tasks {
+        let inputs = &task.inputs;
 
-        for (level, dispatcher) in dispatchers {
-            let enum_ = mk_ident(None);
+        // create a free-queue + inputs buffer per sender
+        if let Some(fq) = analysis.free_queues.get(name) {
+            let receiver = task.args.core;
+            let cap = task.args.capacity;
+            let cap_lit = mk_capacity_literal(cap);
+            let cap_ty = mk_typenum_capacity(cap, true);
 
-            let mut shared = false;
-            let variants = &dispatcher
-                .tasks
-                .iter()
-                .map(|(task, cross)| {
-                    Ident::new(
-                        &if *cross {
-                            shared = true;
-                            format!("{}X", task)
-                        } else {
-                            task.to_string()
-                        },
-                        Span::call_site(),
+            let (_, _, _, input_ty) = regroup_inputs(inputs);
+            for (&sender, ceiling) in fq {
+                let fq = mk_fq_ident(name, sender);
+                let cfg_sender = app.cfg_core(sender);
+
+                let (cfg_fq, mk_loc, fq_ty, expr) = if receiver == sender {
+                    (
+                        cfg_sender.clone(),
+                        Box::new(|| link_local(app, "data")) as Box<Fn() -> _>,
+                        quote!(rtfm::export::SCFQ<#cap_ty>),
+                        quote!(unsafe { rtfm::export::SCFQ::u8_sc() }),
                     )
-                })
-                .collect::<Vec<_>>();
+                } else {
+                    (
+                        None,
+                        Box::new(|| Some(quote!(#[rtfm::export::shared]))) as Box<Fn() -> _>,
+                        quote!(rtfm::export::MCFQ<#cap_ty>),
+                        quote!(rtfm::export::MCFQ::u8()),
+                    )
+                };
 
-            let cfg_ = if shared { &None } else { &cfg };
-
-            let cap = mk_typenum_capacity(dispatcher.capacity, true);
-
-            let e = quote!(rtfm::export);
-            let ty = quote!(#e::ReadyQueue<#enum_, #cap>);
-            let ceiling = analysis.dispatchers[core][level].ceiling;
-
-            let ready_queue;
-            let refmut;
-            if shared {
-                // this needs have consistent names across compilations or `#[shared]` won't work
-                ready_queue = Ident::new(
-                    &format!("C{}P{}_READY_QUEUE", core, level),
-                    Span::call_site(),
-                );
-
-                refmut = quote!(#ready_queue.get_mut());
-
-                items.push(quote!(
-                    #[shared]
-                    static mut #ready_queue: #ty = ();
+                let loc = mk_loc();
+                const_app.push(quote!(
+                    #cfg_fq
+                    #loc
+                    static mut #fq: #fq_ty = #expr;
                 ));
-            } else {
-                ready_queue = mk_ident(None);
 
-                refmut = quote!(&mut #ready_queue);
+                if let Some(ceiling) = ceiling {
+                    const_app.push(quote!(
+                        #cfg_sender
+                        struct #fq<'a> {
+                            priority: &'a rtfm::export::Priority,
+                        }
+                    ));
 
-                items.push(quote!(
-                    #cfg
-                    static mut #ready_queue: #ty = #e::ReadyQueue::new();
+                    const_app.push(impl_mutex(
+                        &[],
+                        cfg_sender.clone(),
+                        false,
+                        &fq,
+                        fq_ty,
+                        *ceiling,
+                        quote!(&mut #fq),
+                    ));
+                }
+
+                let elems = (0..cap)
+                    .map(|_| quote!(rtfm::export::MaybeUninit::uninit()))
+                    .collect::<Vec<_>>();
+
+                let loc = mk_loc();
+                let inputs = mk_inputs_ident(name, sender);
+                const_app.push(quote!(
+                    #cfg_fq
+                    #loc
+                    static mut #inputs: [rtfm::export::MaybeUninit<#input_ty>; #cap_lit] =
+                        [#(#elems,)*];
                 ));
-            };
+            }
+        }
 
-            let resource = mk_resource(
-                ctxt,
-                cfg_,
-                &ready_queue,
-                ty.clone(),
-                ceiling,
-                refmut.clone(),
-                None,
+        let mut needs_lt = false;
+        if !task.args.resources.is_empty() {
+            let (item, constructor) = resources_struct(
+                Kind::Task(name.clone()),
+                task.args.priority,
+                &mut needs_lt,
+                app,
+                analysis,
             );
 
-            items.push(quote!(
-                #[allow(dead_code)]
-                #[allow(non_camel_case_types)]
-                #cfg_
-                enum #enum_ { #(#variants,)* }
+            resources_structs.push(item);
 
-                #resource
-            ));
+            const_app.push(constructor);
+        }
 
-            let sgi = Ident::new(&format!("SG{}", dispatcher.sgi), Span::call_site());
-            let arms = dispatcher
-                .tasks
-                .iter()
-                .enumerate()
-                .map(|(i, (task, cross))| {
-                    let variant = &variants[i];
-                    let task_ = &ctxt.tasks[task];
+        mods.push(module(Kind::Task(name.clone()), needs_lt, app));
 
-                    let message;
-                    let free_queue;
-                    if *cross {
-                        message = task_.shared.as_ref().expect("unreachable");
-                        let fq = &message.free_queue;
-                        free_queue = quote!(#fq.get_mut());
-                    } else {
-                        message = task_.local.as_ref().expect("unreachable");
-                        let fq = &message.free_queue;
-                        free_queue = quote!(#fq);
-                    };
+        let attrs = &task.attrs;
+        let cfg_receiver = app.cfg_core(task.args.core);
+        let context = &task.context;
+        let inputs = &task.inputs;
+        let (locals_struct, lets) = locals(Kind::Task(name.clone()), app);
+        let stmts = &task.stmts;
+        user_code.push(quote!(
+            #(#attrs)*
+            #[allow(non_snake_case)]
+            #cfg_receiver
+            fn #name(__locals: #name::Locals, #context: #name::Context #(,#inputs)*) {
+                use rtfm::Mutex as _;
 
-                    let inputs = &message.inputs;
-                    let pats = tuple_pat(&app.tasks[task].inputs);
-                    let alias = &task_.alias;
-                    let call = quote!(#alias(#pats));
+                #(#lets;)*
 
-                    quote!(#enum_::#variant => {
-                        let input = ptr::read(#inputs.get_ref().get_unchecked(usize::from(index)));
-                        #free_queue.split().0.enqueue_unchecked(index);
-                        let (#pats) = input;
-                        #call
+                #(#stmts)*
+            }
+        ));
+
+        locals_structs.push(locals_struct);
+    }
+
+    (
+        const_app,
+        mods,
+        locals_structs,
+        resources_structs,
+        user_code,
+    )
+}
+
+fn dispatchers(app: &App, analysis: &Analysis) -> Vec<proc_macro2::TokenStream> {
+    let mut items = vec![];
+
+    for (dispatchers, receiver) in analysis.dispatchers.iter().zip(0..) {
+        for (&priority, routes) in dispatchers {
+            let mut drains = vec![];
+            for (&sender, route) in routes {
+                let rq = mk_rq_ident(receiver, sender, priority);
+                let cap = route.capacity(app);
+                let cap_ty = mk_typenum_capacity(cap, true);
+                let t = mk_t_ident(receiver, sender, priority);
+
+                let variants = route
+                    .tasks
+                    .iter()
+                    .map(|name| {
+                        let cfgs = &app.tasks[name].cfgs;
+
+                        quote!(
+                            #(#cfgs)*
+                            #name
+                        )
                     })
-                })
-                .collect::<Vec<_>>();
+                    .collect::<Vec<_>>();
 
-            items.push(quote!(
-                #[rtfm::export::interrupt]
-                #cfg
-                unsafe fn #sgi() {
-                    use core::ptr;
+                let cfg_sender = app.cfg_core(sender);
+                let (cfg_rq, mk_loc, rq_ty, expr) = if receiver == sender {
+                    (
+                        cfg_sender.clone(),
+                        Box::new(|| link_local(app, "data")) as Box<Fn() -> _>,
+                        quote!(rtfm::export::SCRQ<#t, #cap_ty>),
+                        quote!(unsafe { rtfm::export::SCRQ::u8_sc() }),
+                    )
+                } else {
+                    (
+                        None,
+                        Box::new(|| Some(quote!(#[rtfm::export::shared]))) as Box<Fn() -> _>,
+                        quote!(rtfm::export::MCRQ<#t, #cap_ty>),
+                        quote!(rtfm::export::MCRQ::u8()),
+                    )
+                };
 
-                    rtfm::export::run(|| {
-                        while let Some((task, index)) = (#refmut).split().1.dequeue() {
-                            match task {
-                                #(#arms)*
-                            }
+                items.push(quote!(
+                    #[allow(non_camel_case_types)]
+                    #cfg_rq
+                    enum #t {
+                        #(#variants,)*
+                    }
+                ));
+
+                let loc = mk_loc();
+                items.push(quote!(
+                    #cfg_rq
+                    #loc
+                    static mut #rq: #rq_ty = #expr;
+                ));
+
+                if let Some(ceiling) = route.ceiling {
+                    items.push(quote!(
+                        #cfg_sender
+                        struct #rq<'a> {
+                            priority: &'a rtfm::export::Priority,
                         }
+                    ));
+
+                    items.push(impl_mutex(
+                        &[],
+                        cfg_sender.clone(),
+                        false,
+                        &rq,
+                        rq_ty,
+                        ceiling,
+                        quote!(&mut #rq),
+                    ));
+                }
+
+                let arms = route
+                    .tasks
+                    .iter()
+                    .map(|name| {
+                        let task = &app.tasks[name];
+                        let cfgs = &task.cfgs;
+                        let fq = mk_fq_ident(name, sender);
+                        let inputs = mk_inputs_ident(name, sender);
+                        let (_, tupled, pats, _) = regroup_inputs(&task.inputs);
+
+                        let input = quote!(
+                            #inputs.get_unchecked(usize::from(index)).read()
+                        );
+
+                        quote!(
+                            #(#cfgs)*
+                            #t::#name => {
+                                let #tupled = #input;
+                                #fq.split().0.enqueue_unchecked(index);
+                                let priority = &rtfm::export::Priority::new(PRIORITY);
+                                #name(
+                                    #name::Locals::new(),
+                                    #name::Context::new(priority)
+                                    #(,#pats)*
+                                )
+                            }
+                        )
+                    })
+                    .collect::<Vec<_>>();
+
+                drains.push(quote!(
+                    while let Some((task, index)) = #rq.split().1.dequeue() {
+                        match task {
+                            #(#arms)*
+                        }
+                    }
+                ))
+            }
+
+            let cfg_receiver = app.cfg_core(receiver);
+            let sg = mk_sg_ident(analysis.sgis[usize::from(receiver)][&priority]);
+            items.push(quote!(
+                #[no_mangle]
+                #cfg_receiver
+                unsafe fn #sg() {
+                    /// The priority of this interrupt handler
+                    const PRIORITY: u8 = #priority;
+
+                    // check that the interrupt exists
+                    let _ = rtfm::export::Interrupt::#sg;
+
+                    rtfm::export::run(PRIORITY, || {
+                        #(#drains)*
                     });
                 }
             ));
-
-            ctxt.dispatchers[core].insert(*level, Dispatcher { enum_, ready_queue });
         }
     }
 
-    quote!(#(#items)*)
+    items
 }
 
-fn spawn(ctxt: &Context, app: &App, analysis: &Analysis) -> proc_macro2::TokenStream {
+fn spawn(app: &App, analysis: &Analysis) -> Vec<proc_macro2::TokenStream> {
     let mut items = vec![];
 
-    // Generate `spawn` functions
-    let priority = &ctxt.priority;
-    for (name, task) in &ctxt.tasks {
-        let task_ = &app.tasks[name];
-        let core = usize::from(task_.core);
-        let level = task_.args.priority;
-        let args = &task_.inputs;
-        let ty = tuple_ty(args);
-        let pats = tuple_pat(args);
-        let dispatcher = &ctxt.dispatchers[core][&level];
-        let rq = &dispatcher.ready_queue;
-        let enum_ = &dispatcher.enum_;
-        let sgi = analysis.dispatchers[core][&level].sgi;
-        for (cross, spawn) in task
-            .local
-            .iter()
-            .map(|local| (false, local))
-            .chain(task.shared.iter().map(|shared| (true, shared)))
-        {
-            let alias = &spawn.f;
-            let fq = &spawn.free_queue;
-            let inputs = &spawn.inputs;
-            let variant = Ident::new(
-                &if cross {
-                    format!("{}X", name)
-                } else {
-                    name.to_string()
-                },
-                Span::call_site(),
-            );
-
-            let cfg = mk_cfg(app.cores, if cross { None } else { Some(core as u8) });
-            let core = if cross {
-                let core = core as u8;
-                quote!(Some(#core))
-            } else {
-                quote!(None)
-            };
-            items.push(quote!(
-                #[inline(always)]
-                #cfg
-                unsafe fn #alias(
-                    #priority: &core::cell::Cell<u8>,
-                    #(#args,)*
-                ) -> Result<(), #ty> {
-                    use core::ptr;
-
-                    use rtfm::Mutex;
-
-                    if let Some(index) = (#fq { #priority }).lock(|f| f.split().1.dequeue()) {
-                        ptr::write(#inputs.get_mut().get_unchecked_mut(usize::from(index)), (#pats));
-
-                        #rq { #priority }.lock(|rq| {
-                            rq.split().0.enqueue_unchecked((#enum_::#variant, index))
-                        });
-
-                        rtfm::export::sgi(#sgi, #core);
-
-                        Ok(())
-                    } else {
-                        Err((#pats))
-                    }
-                }
-            ));
-        }
-    }
-
-    // Generate `spawn` structs; these call the `spawn` functions generated above
-    for (caller, name, spawn) in app.spawn_callers() {
-        if spawn.is_empty() {
+    // TODO `spawn_` optimization
+    for (sender, spawner, spawnees) in app.spawn_callers() {
+        if spawnees.is_empty() {
             continue;
         }
 
-        let cfg = mk_cfg(app.cores, Some(caller));
+        let spawner_is_init = spawner == "init";
+
         let mut methods = vec![];
-        for task in spawn {
-            let task_ = &app.tasks[task];
-            let callee = task_.core;
-            let inputs = &task_.inputs;
-            let ty = tuple_ty(inputs);
-            let pats = tuple_pat(inputs);
-            let alias = if caller == callee {
-                // local
-                &ctxt.tasks[task].local.as_ref().expect("unreachable").f
+        for name in spawnees {
+            let spawnee = &app.tasks[name];
+            let receiver = spawnee.args.core;
+            let priority = spawnee.args.priority;
+            let cfgs = &spawnee.cfgs;
+            let (args, tupled, _, ty) = regroup_inputs(&spawnee.inputs);
+
+            let fq = mk_fq_ident(name, sender);
+            let inputs = mk_inputs_ident(name, sender);
+            let t = mk_t_ident(receiver, sender, priority);
+            let rq = mk_rq_ident(receiver, sender, priority);
+            let sg = analysis.sgis[usize::from(receiver)][&priority];
+
+            let (let_priority, dequeue, enqueue) = if spawner_is_init {
+                (
+                    None,
+                    quote!(#fq.dequeue()),
+                    quote!(#rq.enqueue_unchecked((#t::#name, index));),
+                )
             } else {
-                // cross-core
-                &ctxt.tasks[task].shared.as_ref().expect("unreachable").f
+                (
+                    Some(quote!(let priority = self.priority();)),
+                    quote!((#fq { priority }).lock(|fq| fq.split().1.dequeue())),
+                    quote!((#rq { priority }).lock(|rq| {
+                        rq.split().0.enqueue_unchecked((#t::#name, index))
+                    });),
+                )
+            };
+
+            let target = if sender == receiver {
+                quote!(rtfm::export::Target::Loopback)
+            } else {
+                quote!(rtfm::export::Target::Unicast(#receiver))
             };
 
             methods.push(quote!(
-                #[allow(unsafe_code)]
-                #[inline]
-                pub fn #task(&self, #(#inputs,)*) -> Result<(), #ty> {
-                    unsafe { #alias(&self.#priority, #pats) }
+                #(#cfgs)*
+                fn #name(&self #(,#args)*) -> Result<(), #ty> {
+                    unsafe {
+                        use rtfm::Mutex as _;
+
+                        #let_priority
+                        let input = #tupled;
+                        if let Some(index) = #dequeue {
+                            #inputs.get_unchecked_mut(usize::from(index)).write(input);
+
+                            #enqueue
+
+                            rtfm::export::ICD::icdsgir(#target, #sg);
+
+                            Ok(())
+                        } else {
+                            Err(input)
+                        }
+                    }
                 }
             ));
         }
 
+        let cfg_core = app.cfg_core(sender);
+        let lt = if spawner_is_init {
+            None
+        } else {
+            Some(quote!('a))
+        };
         items.push(quote!(
-            #cfg
-            impl<'a> #name::Spawn<'a> {
+            #cfg_core
+            impl<#lt> #spawner::Spawn<#lt> {
                 #(#methods)*
             }
-        ));
+        ))
     }
 
-    quote!(#(#items)*)
+    items
 }
 
-/// This function creates creates a module for `init` / `idle` / a `task` (see `kind` argument)
-fn module(
-    ctxt: &mut Context,
-    cfg: &Option<proc_macro2::TokenStream>,
-    kind: Kind,
-    spawn: bool,
-) -> proc_macro2::TokenStream {
-    let mut items = vec![];
-    let mut fields = vec![];
+fn assertions(app: &App, analysis: &Analysis) -> Vec<proc_macro2::TokenStream> {
+    let mut stmts = vec![];
 
-    let name = kind.ident();
-    let priority = &ctxt.priority;
+    for ty in &analysis.assert_sync {
+        stmts.push(quote!(rtfm::export::assert_sync::<#ty>();));
+    }
 
-    let mut lt = None;
-    if spawn {
-        lt = Some(quote!('a));
+    for task in &analysis.tasks_assert_send {
+        let (_, _, _, ty) = regroup_inputs(&app.tasks[task].inputs);
+        stmts.push(quote!(rtfm::export::assert_send::<#ty>();));
+    }
 
-        fields.push(quote!(
-            /// Tasks that can be spawned from this context
-            pub spawn: Spawn<'a>,
-        ));
+    // all late resources need to be `Send`
+    for ty in &analysis.resources_assert_send {
+        stmts.push(quote!(rtfm::export::assert_send::<#ty>();));
+    }
 
-        if kind.is_idle() {
-            items.push(quote!(
-                /// Tasks that can be spawned from this context
-                #[derive(Clone, Copy)]
-                pub struct Spawn<'a> {
-                    #[doc(hidden)]
-                    pub #priority: &'a core::cell::Cell<u8>,
-                }
-            ));
-        } else {
-            items.push(quote!(
-                /// Tasks that can be spawned from this context
-                #[derive(Clone, Copy)]
-                pub struct Spawn<'a> {
-                    #[doc(hidden)]
-                    pub #priority: &'a core::cell::Cell<u8>,
+    stmts
+}
+
+fn pre_init(
+    app: &App,
+    analysis: &Analysis,
+) -> (Vec<proc_macro2::TokenStream>, Vec<proc_macro2::TokenStream>) {
+    let mut const_app = vec![];
+    let mut stmts = vec![];
+
+    for (task, fq) in &analysis.free_queues {
+        let cap = app.tasks[task].args.capacity;
+        for &sender in fq.keys() {
+            let cfg_sender = app.cfg_core(sender);
+            let fq = mk_fq_ident(task, sender);
+
+            stmts.push(quote!(
+                #cfg_sender
+                for i in 0..#cap {
+                    #fq.enqueue_unchecked(i);
                 }
             ));
         }
     }
 
-    let mut root = None;
-    if let Some(resources) = ctxt.resources.get(&kind) {
-        lt = Some(quote!('a));
-
-        root = Some(resources.decl.clone());
-
-        let alias = &resources.alias;
-        items.push(quote!(
-            #[doc(inline)]
-            pub use super::#alias as Resources;
+    if app.cores == 1 {
+        stmts.push(quote!(
+            rtfm::export::setup_counter();
         ));
-
-        fields.push(quote!(
-            /// Resources available in this context
-            pub resources: Resources<'a>,
-        ));
-    };
-
-    let doc = match kind {
-        Kind::Idle => "Idle loop",
-        Kind::Init => "Initialization function",
-        Kind::Task(_) => "Software task",
-    };
-
-    quote!(
-        #root
-
-        #[doc = #doc]
-        #cfg
-        pub mod #name {
-            /// Variables injected into this context by the `app` attribute
-            pub struct Context<#lt> {
-                #(#fields)*
-            }
-
-            #(#items)*
-        }
-    )
-}
-
-fn init(
-    ctxt: &mut Context,
-    cfg: &Option<proc_macro2::TokenStream>,
-    init: &Init,
-    app: &App,
-    analysis: &Analysis,
-) -> proc_macro2::TokenStream {
-    let attrs = &init.attrs;
-    let locals = mk_locals(&init.statics, true);
-    let stmts = &init.stmts;
-    let assigns = init
-        .assigns
-        .iter()
-        .map(|assign| {
-            if app
-                .resources
-                .get(&assign.left)
-                .map(|r| r.expr.is_none())
-                .unwrap_or(false)
-            {
-                let alias = &ctxt.statics[&assign.left];
-                let expr = &assign.right;
-                quote!(unsafe { #alias.set(#expr); })
-            } else {
-                let left = &assign.left;
-                let right = &assign.right;
-                quote!(#left = #right;)
-            }
-        })
-        .collect::<Vec<_>>();
-
-    let prelude = prelude(
-        ctxt,
-        cfg,
-        Kind::Init,
-        &init.args.resources,
-        &init.args.spawn,
-        app,
-        255,
-        analysis,
-    );
-
-    let module = module(ctxt, cfg, Kind::Init, !init.args.spawn.is_empty());
-
-    let unsafety = &init.unsafety;
-    let init = &ctxt.init;
-
-    quote!(
-        #module
-
-        #(#attrs)*
-        #cfg
-        #unsafety fn #init() {
-            #(#locals)*
-
-            #prelude
-
-            #(#stmts)*
-
-            #(#assigns)*
-        }
-    )
-}
-
-fn idle(
-    ctxt: &mut Context,
-    cfg: &Option<proc_macro2::TokenStream>,
-    idle: &Option<Idle>,
-    app: &App,
-    analysis: &Analysis,
-) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
-    if let Some(idle) = idle.as_ref() {
-        let attrs = &idle.attrs;
-        let locals = mk_locals(&idle.statics, true);
-        let stmts = &idle.stmts;
-
-        let prelude = prelude(
-            ctxt,
-            cfg,
-            Kind::Idle,
-            &idle.args.resources,
-            &idle.args.spawn,
-            app,
-            0,
-            analysis,
-        );
-
-        let module = module(ctxt, cfg, Kind::Idle, !idle.args.spawn.is_empty());
-
-        let unsafety = &idle.unsafety;
-        let idle = &ctxt.idle;
-
-        (
-            quote!(
-                #module
-
-                #(#attrs)*
-                #cfg
-                #unsafety fn #idle() -> ! {
-                    #(#locals)*
-
-                    #prelude
-
-                    #(#stmts)*
-                }
-            ),
-            quote!(#idle()),
-        )
     } else {
-        (
-            quote!(),
-            quote!(loop {
-                // TODO WFI?
-                // rtfm::export::wfi();
-            }),
-        )
+        stmts.push(quote!(
+            #[rtfm::export::shared]
+            static __RV__: core::sync::atomic::AtomicBool =
+                core::sync::atomic::AtomicBool::new(false);
+        ));
+
+        stmts.push(quote!(if __RV__
+            .compare_exchange_weak(
+                false,
+                true,
+                core::sync::atomic::Ordering::AcqRel,
+                core::sync::atomic::Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            rtfm::export::setup_counter();
+        }));
     }
-}
 
-fn pre_init(ctxt: &Context, core: u8, app: &App, analysis: &Analysis) -> proc_macro2::TokenStream {
-    let mut exprs = vec![];
+    stmts.push(quote!(
+        rtfm::export::ICC::set_iccpmr(!0);
+        rtfm::export::ICC::set_iccicr((1 << 1) | (1 << 0));
+        rtfm::export::clear_sgis();
+        rtfm::export::ICD::enable();
+    ));
 
-    // Populate the `FreeQueue`s
-    for (name, task) in &analysis.tasks {
-        let task_ = &ctxt.tasks[name];
+    if app.cores != 1 {
+        for &receiver in analysis.pre_rendezvous.keys() {
+            let rv = mk_pre_rv_ident(receiver);
 
-        if app.tasks[name].core == core {
-            if task.local.capacity != 0 {
-                let cap = task.local.capacity;
-                let alias = &task_.local.as_ref().expect("unreachable").free_queue;
+            const_app.push(quote!(
+                #[rtfm::export::shared]
+                static #rv: core::sync::atomic::AtomicBool =
+                    core::sync::atomic::AtomicBool::new(false);
+            ));
 
-                exprs.push(quote!(
-                    for i in 0..#cap {
-                        #alias.enqueue_unchecked(i);
-                    }
+            let cfg_receiver = app.cfg_core(receiver);
+            stmts.push(quote!(
+                #cfg_receiver
+                #rv.store(true, core::sync::atomic::Ordering::Release);
+            ));
+        }
+
+        for (&receiver, senders) in &analysis.pre_rendezvous {
+            let rv = mk_pre_rv_ident(receiver);
+
+            for &sender in senders {
+                let cfg_sender = app.cfg_core(sender);
+                stmts.push(quote!(
+                    #cfg_sender
+                    while !#rv.load(core::sync::atomic::Ordering::Acquire) {}
                 ));
             }
         }
+    }
 
-        if task.shared.capacity != 0 && core == 0 {
-            // FIXME this initialization needs to be synchronized
-            let cap = task.shared.capacity;
-            let alias = &task_.shared.as_ref().expect("unreachable").free_queue;
+    for (sgis, core) in analysis.sgis.iter().zip(0..) {
+        let cfg_core = app.cfg_core(core);
 
-            exprs.push(quote!(
-                #alias.set(rtfm::export::FreeQueue::new());
-                for i in 0..#cap {
-                    #alias.get_mut().enqueue_unchecked(i);
-                }
+        for (priority, sgi) in sgis.iter() {
+            stmts.push(quote!(
+                #cfg_core
+                rtfm::export::ICD::set_priority(
+                    u16::from(#sgi),
+                    rtfm::export::logical2hw(#priority + 1),
+                );
             ));
         }
     }
 
-    // configure the ICC and ICD
-    exprs.push(quote!(
-        let mut icd = rtfm::export::ICD::take().unwrap();
-        let mut icc = rtfm::export::ICC::take().unwrap();
-
-        // disable interrupt routing and signaling during configuration
-        icd.disable();
-        icc.disable();
-
-        // set priority mask to the lowest priority
-        icc.ICCPMR.write(255);
-    ));
-
-    // Set SGIs priorities
-    // Also, populate `#[shared]` `ReadyQueue`s
-    for (priority, dispatcher) in &analysis.dispatchers[usize::from(core)] {
-        let sgi = dispatcher.sgi;
-        exprs.push(quote!(rtfm::export::ICD::set_priority(
-            u16::from(#sgi),
-            ((1 << #PRIORITY_BITS) - #priority) << (8 - #PRIORITY_BITS)
-        );));
-
-        let rq = &ctxt.dispatchers[usize::from(core)][&priority].ready_queue;
-        if dispatcher.shared {
-            exprs.push(quote!(
-                #rq.set(rtfm::export::ReadyQueue::new());
-            ));
-        }
-    }
-
-    exprs.push(quote!(
-        // enable interrupt signaling
-        icc.ICCICR
-            .write((1 << 1) /* EnableNS */ | (1 << 0) /* EnableS */);
-
-        // enable interrupt routing
-        icd.enable();
-    ));
-
-    quote!(#(#exprs)*)
+    (stmts, const_app)
 }
 
-fn mk_resource(
-    ctxt: &Context,
-    cfg: &Option<proc_macro2::TokenStream>,
-    struct_: &Ident,
+fn init(
+    app: &App,
+    analysis: &Analysis,
+) -> (
+    // const_app
+    Vec<proc_macro2::TokenStream>,
+    // mod_init
+    Vec<proc_macro2::TokenStream>,
+    // init_locals
+    Vec<proc_macro2::TokenStream>,
+    // init_resources
+    Vec<proc_macro2::TokenStream>,
+    // init_late_resources
+    Vec<proc_macro2::TokenStream>,
+    // user_init
+    Vec<proc_macro2::TokenStream>,
+    // call_init
+    Vec<proc_macro2::TokenStream>,
+) {
+    let mut const_app = vec![];
+    let mut mod_init = vec![];
+    let mut init_locals = vec![];
+    let mut init_resources = vec![];
+    let mut init_late_resources = vec![];
+    let mut user_init = vec![];
+    let mut call_init = vec![];
+
+    for (core, init) in app
+        .mains
+        .iter()
+        .zip(0..)
+        .filter_map(|(main, core)| main.init.as_ref().map(|init| (core, init)))
+    {
+        let mut needs_lt = false;
+
+        if !init.args.resources.is_empty() {
+            let (item, constructor) =
+                resources_struct(Kind::Init(core), 0, &mut needs_lt, app, analysis);
+
+            init_resources.push(item);
+            const_app.push(constructor);
+        }
+
+        let cfg_core = app.cfg_core(core);
+        call_init.push(quote!(
+            #cfg_core
+            let late = init(init::Locals::new(), init::Context::new());
+        ));
+
+        let ret = if let Some(late) = analysis.late_resources.get(&core) {
+            let late_fields = late
+                .iter()
+                .map(|name| {
+                    let ty = &app.resources[name].ty;
+
+                    quote!(pub #name: #ty)
+                })
+                .collect::<Vec<_>>();
+
+            init_late_resources.push(quote!(
+                /// Resources initialized at runtime
+                #[allow(non_snake_case)]
+                #cfg_core
+                pub struct initLateResources {
+                    #(#late_fields),*
+                }
+            ));
+
+            Some(quote!(-> init::LateResources))
+        } else {
+            None
+        };
+
+        let (locals_struct, lets) = locals(Kind::Init(core), &app);
+        init_locals.push(locals_struct);
+
+        let context = &init.context;
+        let attrs = &init.attrs;
+        let stmts = &init.stmts;
+        user_init.push(quote!(
+            #(#attrs)*
+            #[allow(non_snake_case)]
+            #cfg_core
+            fn init(__locals: init::Locals, #context: init::Context) #ret {
+                #(#lets;)*
+
+                #(#stmts)*
+            }
+        ));
+
+        mod_init.push(module(Kind::Init(core), needs_lt, app));
+    }
+
+    (
+        const_app,
+        mod_init,
+        init_locals,
+        init_resources,
+        init_late_resources,
+        user_init,
+        call_init,
+    )
+}
+
+fn post_init(app: &App, analysis: &Analysis) -> Vec<proc_macro2::TokenStream> {
+    let mut stmts = vec![];
+
+    // initialize late resources
+    for (core, late) in &analysis.late_resources {
+        let cfg_core = app.cfg_core(*core);
+        for name in late {
+            stmts.push(quote!(
+                #cfg_core
+                #name.write(late.#name);
+            ));
+        }
+    }
+
+    let initializers = analysis
+        .post_rendezvous
+        .iter()
+        .flat_map(|(_, initializers)| initializers)
+        .collect::<BTreeSet<_>>();
+    for &initializer in initializers {
+        let rv = mk_post_rv_ident(initializer);
+
+        let cfg_initializer = app.cfg_core(initializer);
+        stmts.push(quote!(
+            #[rtfm::export::shared]
+            static #rv: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+            #cfg_initializer
+            #rv.store(true, core::sync::atomic::Ordering::Release);
+        ));
+    }
+
+    for (&initializer, users) in &analysis.post_rendezvous {
+        let rv = mk_post_rv_ident(initializer);
+
+        for &user in users {
+            let cfg_user = app.cfg_core(user);
+            stmts.push(quote!(
+                #cfg_user
+                while !#rv.load(core::sync::atomic::Ordering::Acquire) {}
+            ));
+        }
+    }
+
+    stmts.push(quote!(
+        rtfm::export::enable_irq();
+    ));
+
+    stmts
+}
+
+fn idle(
+    app: &App,
+    analysis: &Analysis,
+) -> (
+    // const_app_idle
+    Vec<proc_macro2::TokenStream>,
+    // mod_idle
+    Vec<proc_macro2::TokenStream>,
+    // idle_locals
+    Vec<proc_macro2::TokenStream>,
+    // idle_resources
+    Vec<proc_macro2::TokenStream>,
+    // user_idle
+    Vec<proc_macro2::TokenStream>,
+    // call_idle
+    Vec<proc_macro2::TokenStream>,
+) {
+    let mut const_app = vec![];
+    let mut mod_idle = vec![];
+    let mut idle_locals = vec![];
+    let mut idle_resources = vec![];
+    let mut user_idle = vec![];
+    let mut call_idle = vec![];
+
+    for (core, idle) in app.mains.iter().zip(0..).filter_map(|(main, core)| {
+        if let Some(idle) = main.idle.as_ref() {
+            Some((core, idle))
+        } else {
+            None
+        }
+    }) {
+        let mut needs_lt = false;
+
+        if !idle.args.resources.is_empty() {
+            let (item, constructor) =
+                resources_struct(Kind::Idle(core), 0, &mut needs_lt, app, analysis);
+
+            idle_resources.push(item);
+            const_app.push(constructor);
+        }
+
+        let cfg_core = app.cfg_core(core);
+        call_idle.push(quote!(
+            #cfg_core
+            idle(
+                idle::Locals::new(),
+                idle::Context::new(&rtfm::export::Priority::new(0))
+            );
+        ));
+
+        let attrs = &idle.attrs;
+        let context = &idle.context;
+        let (locals, lets) = locals(Kind::Idle(core), app);
+        idle_locals.push(locals);
+        let stmts = &idle.stmts;
+        user_idle.push(quote!(
+            #(#attrs)*
+            #[allow(non_snake_case)]
+            #cfg_core
+            fn idle(__locals: idle::Locals, #context: idle::Context) -> ! {
+                use rtfm::Mutex as _;
+
+                #(#lets;)*
+
+                #(#stmts)*
+            }
+        ));
+
+        mod_idle.push(module(Kind::Idle(core), needs_lt, app));
+    }
+
+    (
+        const_app,
+        mod_idle,
+        idle_locals,
+        idle_resources,
+        user_idle,
+        call_idle,
+    )
+}
+
+/* Support code */
+fn link_local(app: &App, section: &str) -> Option<proc_macro2::TokenStream> {
+    if app.cores == 1 {
+        None
+    } else {
+        static COUNT: AtomicUsize = AtomicUsize::new(0);
+
+        let section = format!(
+            ".local.{}.{}",
+            section,
+            COUNT.fetch_add(1, Ordering::Relaxed)
+        );
+        Some(quote!(#[link_section = #section]))
+    }
+}
+
+fn resources_struct(
+    kind: Kind,
+    priority: u8,
+    needs_lt: &mut bool,
+    app: &App,
+    analysis: &Analysis,
+) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
+    let mut lt = None;
+
+    let (core, resources) = match &kind {
+        Kind::Init(core) => (
+            *core,
+            &app.mains[usize::from(*core)]
+                .init
+                .as_ref()
+                .expect("UNREACHABLE")
+                .args
+                .resources,
+        ),
+
+        Kind::Idle(core) => (
+            *core,
+            &app.mains[usize::from(*core)]
+                .idle
+                .as_ref()
+                .expect("UNREACHABLE")
+                .args
+                .resources,
+        ),
+
+        Kind::Interrupt(name) => {
+            let interrupt = &app.interrupts[name];
+            (interrupt.args.core, &interrupt.args.resources)
+        }
+
+        Kind::Task(name) => {
+            let task = &app.tasks[name];
+            (task.args.core, &task.args.resources)
+        }
+    };
+
+    let mut fields = vec![];
+    let mut values = vec![];
+    let mut has_cfgs = false;
+
+    for name in resources {
+        let res = &app.resources[name];
+
+        let cfgs = &res.cfgs;
+        let mut_ = res.mutability;
+        let ty = &res.ty;
+
+        has_cfgs |= true;
+        if kind.is_init() {
+            if !analysis.ownerships.contains_key(name) {
+                // owned by `init`
+                fields.push(quote!(
+                    #(#cfgs)*
+                    pub #name: &'static #mut_ #ty
+                ));
+
+                values.push(quote!(
+                    #(#cfgs)*
+                    #name: &#mut_ #name
+                ));
+            } else {
+                // owned by someone else
+                lt = Some(quote!('a));
+
+                fields.push(quote!(
+                    #(#cfgs)*
+                    pub #name: &'a mut #ty
+                ));
+
+                values.push(quote!(
+                    #(#cfgs)*
+                    #name: &mut #name
+                ));
+            }
+        } else {
+            let ownership = &analysis.ownerships[name];
+
+            if ownership.needs_lock(priority) {
+                if mut_.is_none() {
+                    lt = Some(quote!('a));
+
+                    fields.push(quote!(
+                        #(#cfgs)*
+                        pub #name: &'a #ty
+                    ));
+                } else {
+                    // resource proxy
+                    lt = Some(quote!('a));
+
+                    fields.push(quote!(
+                        #(#cfgs)*
+                        pub #name: resources::#name<'a>
+                    ));
+
+                    values.push(quote!(
+                        #(#cfgs)*
+                        #name: resources::#name::new(priority)
+                    ));
+
+                    continue;
+                }
+            } else {
+                let lt = if kind.runs_once() {
+                    quote!('static)
+                } else {
+                    lt = Some(quote!('a));
+                    quote!('a)
+                };
+
+                if ownership.is_owned() || mut_.is_none() {
+                    fields.push(quote!(
+                        #(#cfgs)*
+                        pub #name: &#lt #mut_ #ty
+                    ));
+                } else {
+                    fields.push(quote!(
+                        #(#cfgs)*
+                        pub #name: &#lt mut #ty
+                    ));
+                }
+            }
+
+            let is_late = res.expr.is_none();
+            if is_late {
+                let expr = if mut_.is_some() {
+                    quote!(&mut *#name.as_mut_ptr())
+                } else {
+                    quote!(&*#name.as_ptr())
+                };
+
+                values.push(quote!(
+                    #(#cfgs)*
+                    #name: #expr
+                ));
+            } else {
+                values.push(quote!(
+                    #(#cfgs)*
+                    #name: &#mut_ #name
+                ));
+            }
+        }
+    }
+
+    if lt.is_some() {
+        *needs_lt = true;
+
+        if has_cfgs {
+            // the struct could end up empty due to `cfg` leading to an error due to `'a` being
+            // unused so insert a dummy field to "use" the lifetime parameter
+            fields.push(quote!(
+                #[doc(hidden)]
+                pub __marker__: core::marker::PhantomData<&'a ()>
+            ));
+
+            values.push(quote!(__marker__: core::marker::PhantomData))
+        }
+    }
+
+    let cfg_core = app.cfg_core(core);
+    let ident = kind.resources_ident();
+    let doc = format!("Resources {} has access to", kind.ident());
+    let item = quote!(
+        #[allow(non_snake_case)]
+        #[doc = #doc]
+        #cfg_core
+        pub struct #ident<#lt> {
+            #(#fields,)*
+        }
+    );
+    let arg = if kind.is_init() {
+        None
+    } else {
+        Some(quote!(priority: &#lt rtfm::export::Priority))
+    };
+    let constructor = quote!(
+        #cfg_core
+        impl<#lt> #ident<#lt> {
+            #[inline(always)]
+            unsafe fn new(#arg) -> Self {
+                #ident {
+                    #(#values,)*
+                }
+            }
+        }
+    );
+
+    (item, constructor)
+}
+
+/// Creates a `Mutex` implementation
+fn impl_mutex(
+    cfgs: &[Attribute],
+    cfg_core: Option<proc_macro2::TokenStream>,
+    resources_prefix: bool,
+    name: &Ident,
     ty: proc_macro2::TokenStream,
     ceiling: u8,
     ptr: proc_macro2::TokenStream,
-    module: Option<&mut Vec<proc_macro2::TokenStream>>,
 ) -> proc_macro2::TokenStream {
-    let priority = &ctxt.priority;
-
-    let mut items = vec![];
-
-    let path = if let Some(module) = module {
-        let doc = format!("`{}`", ty);
-        module.push(quote!(
-            #[doc = #doc]
-            #cfg
-            pub struct #struct_<'a> {
-                #[doc(hidden)]
-                pub #priority: &'a core::cell::Cell<u8>,
-            }
-        ));
-
-        quote!(resources::#struct_)
+    let path = if resources_prefix {
+        quote!(resources::#name)
     } else {
-        items.push(quote!(
-            #cfg
-            struct #struct_<'a> {
-                #priority: &'a core::cell::Cell<u8>,
-            }
-        ));
-
-        quote!(#struct_)
+        quote!(#name)
     };
 
-    items.push(quote!(
-        #cfg
+    let priority = if resources_prefix {
+        quote!(self.priority())
+    } else {
+        quote!(self.priority)
+    };
+
+    quote!(
+        #(#cfgs)*
+        #cfg_core
         impl<'a> rtfm::Mutex for #path<'a> {
             type T = #ty;
 
-            #[inline]
-            fn lock<R, F>(&mut self, f: F) -> R
-            where
-                F: FnOnce(&mut Self::T) -> R,
-            {
+            #[inline(always)]
+            fn lock<R>(&mut self, f: impl FnOnce(&mut #ty) -> R) -> R {
+                /// Priority ceiling
+                const CEILING: u8 = #ceiling;
+
                 unsafe {
-                    rtfm::export::claim(
+                    rtfm::export::lock(
                         #ptr,
-                        &self.#priority,
-                        #ceiling,
+                        #priority,
+                        CEILING,
                         f,
                     )
                 }
             }
         }
-    ));
-
-    quote!(#(#items)*)
+    )
 }
 
-// `once = true` means that these locals will be called from a function that will run *once*
-fn mk_locals(locals: &HashMap<Ident, Static>, once: bool) -> proc_macro2::TokenStream {
-    let lt = if once { Some(quote!('static)) } else { None };
-
-    let locals = locals
-        .iter()
-        .map(|(name, static_)| {
-            let attrs = &static_.attrs;
-            let expr = &static_.expr;
-            let ident = name;
-            let ty = &static_.ty;
-
-            quote!(
-                #[allow(non_snake_case)]
-                let #ident: &#lt mut #ty = {
-                    #(#attrs)*
-                    static mut #ident: #ty = #expr;
-
-                    unsafe { &mut #ident }
-                };
-            )
-        })
-        .collect::<Vec<_>>();
-
-    quote!(#(#locals)*)
-}
-
-/// The prelude injects `resources` and `spawn` (all values) into a function scope
-fn prelude(
-    ctxt: &mut Context,
-    cfg: &Option<proc_macro2::TokenStream>,
+fn locals(
     kind: Kind,
-    resources: &Idents,
-    spawn: &Idents,
     app: &App,
-    logical_prio: u8,
-    analysis: &Analysis,
-) -> proc_macro2::TokenStream {
-    let mut items = vec![];
+) -> (
+    // locals
+    proc_macro2::TokenStream,
+    // lets
+    Vec<proc_macro2::TokenStream>,
+) {
+    let runs_once = kind.runs_once();
+    let ident = kind.locals_ident();
+    let (core, statics) = match kind {
+        Kind::Init(core) => (
+            core,
+            &app.mains[usize::from(core)]
+                .init
+                .as_ref()
+                .expect("UNREACHABLE")
+                .statics,
+        ),
 
-    let lt = if kind.runs_once() {
-        quote!('static)
-    } else {
-        quote!('a)
+        Kind::Idle(core) => (
+            core,
+            &app.mains[usize::from(core)]
+                .idle
+                .as_ref()
+                .expect("UNREACHABLE")
+                .statics,
+        ),
+
+        Kind::Interrupt(name) => {
+            let interrupt = &app.interrupts[&name];
+
+            (interrupt.args.core, &interrupt.statics)
+        }
+
+        Kind::Task(name) => {
+            let task = &app.tasks[&name];
+
+            (task.args.core, &task.statics)
+        }
     };
 
-    let module = kind.ident();
+    let mut lt = None;
+    let mut fields = vec![];
+    let mut lets = vec![];
+    let mut items = vec![];
+    let mut values = vec![];
 
-    let priority = &ctxt.priority;
-    if !resources.is_empty() {
-        let mut defs = vec![];
-        let mut exprs = vec![];
+    let mut has_cfgs = false;
+    for (name, static_) in statics {
+        let lt = if runs_once {
+            quote!('static)
+        } else {
+            lt = Some(quote!('a));
+            quote!('a)
+        };
 
-        // NOTE This field is just to avoid unused type parameter errors around `'a`
-        defs.push(quote!(#[allow(dead_code)] #priority: &'a core::cell::Cell<u8>));
-        exprs.push(quote!(#priority));
+        let cfgs = &static_.cfgs;
+        let expr = &static_.expr;
+        let ty = &static_.ty;
 
-        let mut may_call_lock = false;
-        let mut needs_unsafe = false;
-        for name in resources {
-            let res = &app.resources[name];
-            let initialized = res.expr.is_some();
-            let mut_ = res.mutability;
-            let ty = &res.ty;
+        if !cfgs.is_empty() {
+            has_cfgs = true;
+        }
 
-            if kind.is_init() {
-                let mut force_mut = false;
-                if !analysis.ownerships.contains_key(name) {
-                    // owned by Init
-                    defs.push(quote!(pub #name: &'static #mut_ #ty));
-                } else {
-                    // owned by someone else
-                    force_mut = true;
-                    defs.push(quote!(pub #name: &'a mut #ty));
-                }
+        fields.push(quote!(
+            #(#cfgs)*
+            #name: &#lt mut #ty
+        ));
 
-                let alias = &ctxt.statics[name];
-                // Resources assigned to init are always const initialized
-                needs_unsafe = true;
-                if force_mut {
-                    exprs.push(quote!(#name: &mut #alias));
-                } else {
-                    exprs.push(quote!(#name: &#mut_ #alias));
-                }
-            } else {
-                let ownership = &analysis.ownerships[name];
-                let mut exclusive = false;
+        items.push(quote!(
+            #(#cfgs)*
+            static mut #name: #ty = #expr
+        ));
 
-                if ownership.needs_lock(logical_prio) {
-                    may_call_lock = true;
-                    if mut_.is_none() {
-                        defs.push(quote!(pub #name: &'a #ty));
-                    } else {
-                        // Generate a resource proxy
-                        defs.push(quote!(pub #name: resources::#name<'a>));
-                        exprs.push(quote!(#name: resources::#name { #priority }));
-                        continue;
-                    }
-                } else {
-                    if ownership.is_owned() || mut_.is_none() {
-                        defs.push(quote!(pub #name: &#lt #mut_ #ty));
-                    } else {
-                        exclusive = true;
-                        may_call_lock = true;
-                        defs.push(quote!(pub #name: rtfm::Exclusive<#lt, #ty>));
-                    }
-                }
+        values.push(quote!(
+            #(#cfgs)*
+            #name: &mut #name
+        ));
 
-                let alias = &ctxt.statics[name];
-                needs_unsafe = true;
-                if initialized {
-                    if exclusive {
-                        exprs.push(quote!(#name: rtfm::Exclusive(&mut #alias)));
-                    } else {
-                        exprs.push(quote!(#name: &#mut_ #alias));
-                    }
-                } else {
-                    let method = if mut_.is_some() {
-                        quote!(get_mut)
-                    } else {
-                        quote!(get_ref)
-                    };
+        lets.push(quote!(
+            #(#cfgs)*
+            let #name = __locals.#name
+        ));
+    }
 
-                    if exclusive {
-                        exprs.push(quote!(#name: rtfm::Exclusive(#alias.#method()) ));
-                    } else {
-                        exprs.push(quote!(#name: #alias.#method() ));
-                    }
+    if lt.is_some() && has_cfgs {
+        fields.push(quote!(__marker__: core::marker::PhantomData<&'a mut ()>));
+        values.push(quote!(__marker__: core::marker::PhantomData));
+    }
+
+    let cfg_core = app.cfg_core(core);
+    let locals = quote!(
+        #cfg_core
+        #[allow(non_snake_case)]
+        #[doc(hidden)]
+        pub struct #ident<#lt> {
+            #(#fields),*
+        }
+
+        #cfg_core
+        impl<#lt> #ident<#lt> {
+            #[inline(always)]
+            unsafe fn new() -> Self {
+                #(#items;)*
+
+                #ident {
+                    #(#values),*
                 }
             }
         }
+    );
 
-        let alias = mk_ident(None);
-        let unsafety = if needs_unsafe {
-            Some(quote!(unsafe))
+    (locals, lets)
+}
+
+fn module(kind: Kind, resources_lt: bool, app: &App) -> proc_macro2::TokenStream {
+    let mut items = vec![];
+    let mut fields = vec![];
+    let mut values = vec![];
+
+    let name = kind.ident();
+    let mut lt = None;
+
+    let ident = kind.locals_ident();
+    items.push(quote!(
+        #[doc(inline)]
+        pub use super::#ident as Locals;
+    ));
+
+    if !kind.resources(app).is_empty() {
+        let ident = kind.resources_ident();
+        let lt = if resources_lt {
+            lt = Some(quote!('a));
+            Some(quote!('a))
         } else {
             None
         };
 
-        let doc = format!("`{}::Resources`", kind.ident().to_string());
-        let decl = quote!(
-            #[doc = #doc]
-            #[allow(non_snake_case)]
-            #cfg
-            pub struct #alias<'a> { #(#defs,)* }
-        );
         items.push(quote!(
-            #[allow(unused_variables)]
-            #[allow(unsafe_code)]
-            #[allow(unused_mut)]
-            let mut resources = #unsafety { #alias { #(#exprs,)* } };
+            #[doc(inline)]
+            pub use super::#ident as Resources;
         ));
 
-        ctxt.resources
-            .insert(kind.clone(), Resources { alias, decl });
+        fields.push(quote!(
+            /// Resources this task has access to
+            pub resources: Resources<#lt>
+        ));
 
-        if may_call_lock {
-            items.push(quote!(
-                use rtfm::Mutex;
-            ));
-        }
-    }
-
-    if !spawn.is_empty() {
-        if kind.is_idle() {
-            items.push(quote!(
-                #[allow(unused_variables)]
-                let spawn = #module::Spawn { #priority };
-            ));
+        let priority = if kind.is_init() {
+            None
         } else {
-            let baseline_expr = match () {
-                #[cfg(feature = "timer-queue")]
-                () => {
-                    let baseline = &ctxt.baseline;
-                    quote!(#baseline)
-                }
-                #[cfg(not(feature = "timer-queue"))]
-                () => quote!(),
-            };
+            Some(quote!(priority))
+        };
+        values.push(quote!(resources: Resources::new(#priority)));
+    }
+
+    if !kind.spawn(app).is_empty() {
+        let doc = "Tasks that can be `spawn`-ed from this context";
+        if kind.is_init() {
+            fields.push(quote!(
+                #[doc = #doc]
+                pub spawn: Spawn
+            ));
+
             items.push(quote!(
-                #[allow(unused_variables)]
-                let spawn = #module::Spawn { #priority, #baseline_expr };
+                #[doc = #doc]
+                #[derive(Clone, Copy)]
+                pub struct Spawn {
+                    _not_send: core::marker::PhantomData<*mut ()>,
+                }
+            ));
+
+            values.push(quote!(spawn: Spawn { _not_send: core::marker::PhantomData }));
+        } else {
+            lt = Some(quote!('a));
+
+            fields.push(quote!(
+                #[doc = #doc]
+                pub spawn: Spawn<'a>
+            ));
+
+            if kind.is_idle() {
+                items.push(quote!(
+                    #[doc = #doc]
+                    #[derive(Clone, Copy)]
+                    pub struct Spawn<'a> {
+                        priority: &'a rtfm::export::Priority,
+                    }
+                ));
+
+                values.push(quote!(spawn: Spawn { priority }));
+            } else {
+                items.push(quote!(
+                    /// Tasks that can be spawned from this context
+                    #[derive(Clone, Copy)]
+                    pub struct Spawn<'a> {
+                        priority: &'a rtfm::export::Priority,
+                    }
+                ));
+
+                values.push(quote!(
+                    spawn: Spawn { priority }
+                ));
+            }
+
+            items.push(quote!(
+                impl<'a> Spawn<'a> {
+                    #[doc(hidden)]
+                    #[inline(always)]
+                    pub unsafe fn priority(&self) -> &rtfm::export::Priority {
+                        self.priority
+                    }
+                }
             ));
         }
     }
 
-    if items.is_empty() {
-        quote!()
+    if kind.returns_late_resources(app) {
+        items.push(quote!(
+            #[doc(inline)]
+            pub use super::initLateResources as LateResources;
+        ));
+    }
+
+    let priority = if kind.is_init() {
+        None
     } else {
-        quote!(
-            let ref #priority = core::cell::Cell::new(#logical_prio);
-
-            #(#items)*
-        )
-    }
-}
-
-fn mk_ident(name: Option<&str>) -> Ident {
-    static CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
-
-    let elapsed = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-
-    let secs = elapsed.as_secs();
-    let nanos = elapsed.subsec_nanos();
-
-    let count = CALL_COUNT.fetch_add(1, Ordering::SeqCst) as u32;
-    let mut seed: [u8; 16] = [0; 16];
-
-    for (i, v) in seed.iter_mut().take(8).enumerate() {
-        *v = ((secs >> (i * 8)) & 0xFF) as u8
-    }
-
-    for (i, v) in seed.iter_mut().skip(8).take(4).enumerate() {
-        *v = ((nanos >> (i * 8)) & 0xFF) as u8
-    }
-
-    for (i, v) in seed.iter_mut().skip(12).enumerate() {
-        *v = ((count >> (i * 8)) & 0xFF) as u8
-    }
-
-    let n;
-    let mut s = if let Some(name) = name {
-        n = 4;
-        format!("{}_", name)
-    } else {
-        n = 16;
-        String::new()
+        Some(quote!(priority: &#lt rtfm::export::Priority))
     };
 
-    let mut rng = rand::rngs::SmallRng::from_seed(seed);
-    for i in 0..n {
-        if i == 0 || rng.gen() {
-            s.push(('a' as u8 + rng.gen::<u8>() % 25) as char)
-        } else {
-            s.push(('0' as u8 + rng.gen::<u8>() % 10) as char)
+    items.push(quote!(
+        /// Execution context
+        pub struct Context<#lt> {
+            #(#fields,)*
         }
-    }
 
-    Ident::new(&s, Span::call_site())
+        impl<#lt> Context<#lt> {
+            #[inline(always)]
+            pub unsafe fn new(#priority) -> Self {
+                Context {
+                    #(#values,)*
+                }
+            }
+        }
+    ));
+
+    let doc = kind.doc();
+    let cfg_core = kind.cfg_core(app);
+    if !items.is_empty() {
+        quote!(
+            #[allow(non_snake_case)]
+            #[doc = #doc]
+            #cfg_core
+            pub mod #name {
+                #(#items)*
+            }
+        )
+    } else {
+        quote!()
+    }
 }
 
+/// `u8` -> (unsuffixed) `LitInt`
 fn mk_capacity_literal(capacity: u8) -> LitInt {
     LitInt::new(u64::from(capacity), IntSuffix::None, Span::call_site())
 }
 
+/// e.g. `4u8` -> `U4`
 fn mk_typenum_capacity(capacity: u8, power_of_two: bool) -> proc_macro2::TokenStream {
     let capacity = if power_of_two {
-        capacity
-            .checked_next_power_of_two()
-            .expect("capacity.next_power_of_two()")
+        capacity.checked_next_power_of_two().expect("UNREACHABLE")
     } else {
         capacity
     };
@@ -1203,67 +1598,219 @@ fn mk_typenum_capacity(capacity: u8, power_of_two: bool) -> proc_macro2::TokenSt
     quote!(rtfm::export::consts::#ident)
 }
 
-fn mk_cfg(cores: u8, core: Option<u8>) -> Option<proc_macro2::TokenStream> {
-    if cores == 1 {
-        None
-    } else {
-        core.and_then(|core| {
-            let core = core.to_string();
-            Some(quote!(#[cfg(core = #core)]))
-        })
-    }
+/// e.g. `foo_S2_INPUTS`
+fn mk_inputs_ident(task: &Ident, sender: u8) -> Ident {
+    Ident::new(&format!("{}_S{}_INPUTS", task, sender), Span::call_site())
 }
 
-fn tuple_ty(inputs: &[ArgCaptured]) -> proc_macro2::TokenStream {
+/// e.g. `foo_S1_FQ`
+fn mk_fq_ident(task: &Ident, sender: u8) -> Ident {
+    Ident::new(&format!("{}_S{}_FQ", task, sender), Span::call_site())
+}
+
+/// e.g. `R0_S1_RQ3`
+fn mk_rq_ident(receiver: u8, sender: u8, priority: u8) -> Ident {
+    Ident::new(
+        &format!("R{}_S{}_RQ{}", receiver, sender, priority),
+        Span::call_site(),
+    )
+}
+
+/// e.g. `R0_S1_T3`
+fn mk_t_ident(receiver: u8, sender: u8, priority: u8) -> Ident {
+    Ident::new(
+        &format!("R{}_S{}_T{}", receiver, sender, priority),
+        Span::call_site(),
+    )
+}
+
+/// e.g. `SG0`
+fn mk_sg_ident(i: u8) -> Ident {
+    Ident::new(&format!("SG{}", i), Span::call_site())
+}
+
+fn mk_pre_rv_ident(core: u8) -> Ident {
+    Ident::new(&format!("__PRE_RV{}__", core), Span::call_site())
+}
+
+fn mk_post_rv_ident(core: u8) -> Ident {
+    Ident::new(&format!("__POST_RV{}__", core), Span::call_site())
+}
+
+fn regroup_inputs(
+    inputs: &[ArgCaptured],
+) -> (
+    // args e.g. &[`_0`],  &[`_0: i32`, `_1: i64`]
+    Vec<proc_macro2::TokenStream>,
+    // tupled e.g. `_0`, `(_0, _1)`
+    proc_macro2::TokenStream,
+    // untupled e.g. &[`_0`], &[`_0`, `_1`]
+    Vec<proc_macro2::TokenStream>,
+    // ty e.g. `Foo`, `(i32, i64)`
+    proc_macro2::TokenStream,
+) {
     if inputs.len() == 1 {
         let ty = &inputs[0].ty;
-        quote!(#ty)
+
+        (
+            vec![quote!(_0: #ty)],
+            quote!(_0),
+            vec![quote!(_0)],
+            quote!(#ty),
+        )
     } else {
-        let tys = inputs.iter().map(|i| &i.ty).collect::<Vec<_>>();
+        let mut args = vec![];
+        let mut pats = vec![];
+        let mut tys = vec![];
 
-        quote!((#(#tys,)*))
-    }
-}
+        for (i, input) in inputs.iter().enumerate() {
+            let i = Ident::new(&format!("_{}", i), Span::call_site());
+            let ty = &input.ty;
 
-fn tuple_pat(inputs: &[ArgCaptured]) -> proc_macro2::TokenStream {
-    if inputs.len() == 1 {
-        let pat = &inputs[0].pat;
-        quote!(#pat)
-    } else {
-        let pats = inputs.iter().map(|i| &i.pat).collect::<Vec<_>>();
+            args.push(quote!(#i: #ty));
 
-        quote!(#(#pats,)*)
+            pats.push(quote!(#i));
+
+            tys.push(quote!(#ty));
+        }
+
+        let tupled = {
+            let pats = pats.clone();
+            quote!((#(#pats,)*))
+        };
+        let ty = quote!((#(#tys,)*));
+        (args, tupled, pats, ty)
     }
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 enum Kind {
-    Idle,
-    Init,
+    Idle(u8),
+    Init(u8),
+    Interrupt(Ident),
     Task(Ident),
 }
 
 impl Kind {
     fn ident(&self) -> Ident {
+        let span = Span::call_site();
         match self {
-            Kind::Init => Ident::new("init", Span::call_site()),
-            Kind::Idle => Ident::new("idle", Span::call_site()),
+            Kind::Idle(..) => Ident::new("idle", span),
+            Kind::Init(..) => Ident::new("init", span),
+            Kind::Interrupt(name) => name.clone(),
             Kind::Task(name) => name.clone(),
         }
     }
 
+    fn locals_ident(&self) -> Ident {
+        Ident::new(&format!("{}Locals", self.ident()), Span::call_site())
+    }
+
+    fn resources_ident(&self) -> Ident {
+        Ident::new(&format!("{}Resources", self.ident()), Span::call_site())
+    }
+
+    fn cfg_core(&self, app: &App) -> Option<proc_macro2::TokenStream> {
+        let core = match self {
+            Kind::Idle(core) => *core,
+            Kind::Init(core) => *core,
+            Kind::Interrupt(name) => app.interrupts[name].args.core,
+            Kind::Task(name) => app.tasks[name].args.core,
+        };
+
+        app.cfg_core(core)
+    }
+
+    fn resources<'a>(&self, app: &'a App) -> &'a Idents {
+        match self {
+            Kind::Init(core) => {
+                &app.mains[usize::from(*core)]
+                    .init
+                    .as_ref()
+                    .expect("UNREACHABLE")
+                    .args
+                    .resources
+            }
+
+            Kind::Idle(core) => {
+                &app.mains[usize::from(*core)]
+                    .idle
+                    .as_ref()
+                    .expect("UNREACHABLE")
+                    .args
+                    .resources
+            }
+
+            Kind::Interrupt(name) => &app.interrupts[name].args.resources,
+
+            Kind::Task(name) => &app.tasks[name].args.resources,
+        }
+    }
+
+    fn returns_late_resources(&self, app: &App) -> bool {
+        match self {
+            Kind::Init(core) => {
+                app.mains[usize::from(*core)]
+                    .init
+                    .as_ref()
+                    .expect("UNREACHABLE")
+                    .returns_late_resources
+            }
+
+            _ => false,
+        }
+    }
+
+    fn spawn<'a>(&self, app: &'a App) -> &'a Idents {
+        match self {
+            Kind::Init(core) => {
+                &app.mains[usize::from(*core)]
+                    .init
+                    .as_ref()
+                    .expect("UNREACHABLE")
+                    .args
+                    .spawn
+            }
+
+            Kind::Idle(core) => {
+                &app.mains[usize::from(*core)]
+                    .idle
+                    .as_ref()
+                    .expect("UNREACHABLE")
+                    .args
+                    .spawn
+            }
+
+            Kind::Interrupt(name) => &app.interrupts[name].args.spawn,
+
+            Kind::Task(name) => &app.tasks[name].args.spawn,
+        }
+    }
+
     fn is_idle(&self) -> bool {
-        *self == Kind::Idle
+        match *self {
+            Kind::Idle(_) => true,
+            _ => false,
+        }
     }
 
     fn is_init(&self) -> bool {
-        *self == Kind::Init
+        match *self {
+            Kind::Init(_) => true,
+            _ => false,
+        }
     }
 
     fn runs_once(&self) -> bool {
-        match *self {
-            Kind::Init | Kind::Idle => true,
-            _ => false,
+        self.is_init() || self.is_idle()
+    }
+
+    fn doc(&self) -> &str {
+        match self {
+            Kind::Idle(..) => "Idle loop",
+            Kind::Init(..) => "Initialization function",
+            Kind::Interrupt(..) => "Hardware task",
+            Kind::Task(..) => "Software task",
         }
     }
 }

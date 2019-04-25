@@ -3,40 +3,51 @@
 //! Expected output
 //!
 //! ```
-//! IRQ(ICCIAR { cpuid: 0, ackintid: 0 })
+//! IRQ(ICCIAR { cpuid: 0, ackintid: 2 })
 //! A
 //! B - SHARED = 1
-//! IRQ(ICCIAR { cpuid: 0, ackintid: 2 })
-//! C
-//! ~IRQ(ICCIAR { cpuid: 0, ackintid: 2 })
 //! IRQ(ICCIAR { cpuid: 0, ackintid: 1 })
-//! D - SHARED = 2
+//! C
 //! ~IRQ(ICCIAR { cpuid: 0, ackintid: 1 })
-//! E
+//! IRQ(ICCIAR { cpuid: 0, ackintid: 0 })
+//! D - SHARED = 2
 //! ~IRQ(ICCIAR { cpuid: 0, ackintid: 0 })
+//! E
+//! ~IRQ(ICCIAR { cpuid: 0, ackintid: 2 })
+//! F
 //! ```
 
-#![feature(maybe_uninit)]
-#![feature(maybe_uninit_ref)]
 #![no_main]
 #![no_std]
 
-extern crate panic_dcc;
-
 use arm_dcc::dprintln;
+use panic_dcc as _;
 
 #[rtfm::app]
 const APP: () = {
     static mut SHARED: u32 = 0;
 
+    // priority = 0
     #[init(spawn = [foo])]
-    fn init() {
-        spawn.foo().unwrap();
+    fn init(c: init::Context) {
+        c.spawn.foo().unwrap();
     }
 
-    // priority = 2
+    #[idle]
+    fn idle(_: idle::Context) -> ! {
+        dprintln!("F");
+
+        loop {}
+    }
+
+    // priority = 1
     #[task(resources = [SHARED], spawn = [bar, baz])]
-    fn foo() {
+    fn foo(
+        foo::Context {
+            mut resources,
+            spawn,
+        }: foo::Context,
+    ) {
         dprintln!("A");
 
         resources.SHARED.lock(|shared| {
@@ -52,15 +63,15 @@ const APP: () = {
         dprintln!("E");
     }
 
-    #[task(priority = 3, resources = [SHARED])]
-    fn bar() {
-        *resources.SHARED += 1;
+    #[task(priority = 2, resources = [SHARED])]
+    fn bar(c: bar::Context) {
+        *c.resources.SHARED += 1;
 
-        dprintln!("D - SHARED = {}", *resources.SHARED);
+        dprintln!("D - SHARED = {}", *c.resources.SHARED);
     }
 
-    #[task(priority = 4)]
-    fn baz() {
+    #[task(priority = 3)]
+    fn baz(_: baz::Context) {
         dprintln!("C");
     }
 };

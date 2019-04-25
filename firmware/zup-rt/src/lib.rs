@@ -1,15 +1,18 @@
+#![deny(warnings)]
 #![no_std]
 
 #[cfg(not(debug_assertions))]
 use core::sync::atomic::{self, Ordering};
 
-use cortex_r::gic::{ICC, ICCIAR};
+#[cfg(debug_assertions)]
 use arm_dcc::dprintln;
+use cortex_r::gic::{ICC, ICCIAR};
 pub use zup_rt_macros::{entry, exception, interrupt};
 
+#[allow(unused_attributes)]
 #[no_mangle]
 unsafe extern "C" fn DefaultHandler() {
-    dprintln!("Unhandled exception");
+    // dprintln!("Unhandled exception");
 
     loop {
         // NOTE(compiler_fence) prevents LLVM from turning this infinite loop into an abort
@@ -54,9 +57,10 @@ pub enum Interrupt {
 }
 
 // TODO consider rewriting this in assembly to make it constant time and as fast as possible
+#[allow(unused_attributes)]
 #[no_mangle]
 unsafe extern "C" fn IRQ(icciar: ICCIAR) {
-    // TODO remove
+    #[cfg(debug_assertions)]
     dprintln!("IRQ({:?})", icciar);
 
     cortex_r::enable_irq();
@@ -64,6 +68,7 @@ unsafe extern "C" fn IRQ(icciar: ICCIAR) {
     let ackintid = icciar.ackintid();
     if ackintid == 1023 {
         // spurious interrupt; ignore
+        #[cfg(debug_assertions)]
         dprintln!("spurious interrupt");
         return;
     } else if ackintid < 16 {
@@ -112,7 +117,7 @@ unsafe extern "C" fn IRQ(icciar: ICCIAR) {
 
     cortex_r::disable_irq();
 
-    // TODO remove
+    #[cfg(debug_assertions)]
     dprintln!("~IRQ({:?})", icciar);
 
     ICC::set_icceoir(icciar);

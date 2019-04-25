@@ -1,36 +1,84 @@
-use std::{
-    cmp,
-    collections::{BTreeMap, HashMap, HashSet},
-    ops,
-};
+use core::{cmp, ops};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use syn::{Ident, Type};
 
-use crate::syntax::App;
+use crate::{
+    syntax::{App, Idents},
+    NSGIS,
+};
 
 pub type Ownerships = HashMap<Ident, Ownership>;
 
 pub struct Analysis {
-    pub dispatchers: Vec<BTreeMap</* priority: */ u8, Dispatcher>>,
+    /// Per core dispatchers
+    pub dispatchers: Dispatchers,
+
+    /// Ceilings of free queues
+    pub free_queues: FreeQueues,
+
+    /// all cores that spawn a particular task TODO ???
+    // pub routes: BTreeMap<Ident, BTreeSet<u8>>,
     pub resources_assert_send: HashSet<Box<Type>>,
+
     pub tasks_assert_send: HashSet<Ident>,
+
     /// Types of RO resources that need to be Sync
     pub assert_sync: HashSet<Box<Type>>,
+
     // Resource ownership
     pub ownerships: Ownerships,
-    pub tasks: HashMap<Ident, Task>,
+
+    /// Location of resources, `None` indicates `#[shared]` memory
+    // Resources are usually `#[local]` but they must be `#[shared]` when (a) they are shared
+    // between cores (RO resources) or (b) they are cross-initialized
+    // Resources not accessed by any task will not be listed in this map
+    pub locations: BTreeMap<Ident, Option<u8>>,
+
+    /// Maps a core to the resources it initializes
+    pub late_resources: BTreeMap<u8, Idents>,
+
+    // priority -> SG{}
+    pub sgis: Vec<Sgis>,
+
+    // `receiver` -> [`sender`]
+    pub pre_rendezvous: BTreeMap<u8, BTreeSet<u8>>,
+
+    // `user` -> [`initializer`]
+    pub post_rendezvous: BTreeMap<u8, BTreeSet<u8>>,
 }
 
-#[derive(Default)]
-pub struct Task {
-    pub local: FreeQueue,
-    pub shared: FreeQueue,
+pub type Dispatchers = Vec<BTreeMap</* priority: */ u8, BTreeMap</* sender: */ u8, Route>>>;
+
+pub type FreeQueues = BTreeMap<Ident, BTreeMap</* sender: */ u8, /* ceiling: */ Option<u8>>>;
+
+#[derive(Clone, Default)]
+pub struct Sgis {
+    next: u8,
+    map: BTreeMap</* priority: */ u8, /* sgi: */ u8>,
 }
 
-#[derive(Default)]
-pub struct FreeQueue {
-    pub capacity: u8,
-    pub ceiling: u8,
+impl Sgis {
+    fn insert(&mut self, priority: u8, used_sgis: &BTreeSet<u8>) {
+        if !self.map.contains_key(&priority) {
+            while used_sgis.contains(&self.next) {
+                self.next += 1;
+
+                debug_assert!(self.next < NSGIS);
+            }
+
+            self.map.insert(priority, self.next);
+            self.next += 1;
+        }
+    }
+}
+
+impl ops::Deref for Sgis {
+    type Target = BTreeMap<u8, u8>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.map
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -61,158 +109,155 @@ impl Ownership {
     }
 }
 
-pub struct Dispatcher {
-    /// Number in the range `0..=15`
-    pub sgi: u8,
-    /// Tasks dispatched at this priority level
-    pub tasks: Vec<(Ident, /* cross: */ bool)>,
-    // Queue capacity
-    pub capacity: u8,
-    // Ready queue ceiling
-    pub ceiling: u8,
-    // is the queue in shared memory?
-    pub shared: bool,
+#[derive(Clone, Default)]
+pub struct Route {
+    /// Tasks dispatched through this route
+    pub tasks: Idents,
+
+    /// The priority ceiling of this route ready queue
+    /// `None` means that no task contends for this ready queue; this can happen when spawn is done
+    /// by `init`
+    pub ceiling: Option<u8>,
 }
 
-// TODO remove?
-// #[derive(Clone, Copy, PartialEq)]
-// pub enum Source {
-//     /// All messages are local
-//     Local,
-//     /// All messages come from another core
-//     External,
-//     Both,
-// }
-
-// impl ops::AddAssign<Source> for Source {
-//     fn add_assign(&mut self, other: Source) {
-//         match *self {
-//             Source::Local if other != Source::Local => *self = Source::Both,
-//             Source::External if other != Source::External => *self = Source::Both,
-//             _ => {}
-//         }
-//     }
-// }
+impl Route {
+    pub fn capacity(&self, app: &App) -> u8 {
+        self.tasks
+            .iter()
+            .map(|name| app.tasks[name].args.capacity)
+            .sum()
+    }
+}
 
 pub fn app(app: &App) -> Analysis {
     // Ceiling analysis of R/W resource and Sync analysis of RO resources
-    // (Resource shared by tasks that run at different priorities need to be `Sync`)
-    let mut ownerships = Ownerships::new();
+    // (RO resources shared by tasks that run at different priorities need to be `Sync`)
     let mut assert_sync = HashSet::new();
+    let mut locations = BTreeMap::<_, Option<u8>>::new();
+    let mut ownerships = Ownerships::new();
 
-    for (priority, res) in app.resource_accesses() {
-        // `#[shared]` statics are not resources
-        if app.resources[res].core.is_none() {
-            continue;
+    for (core, priority, name) in app.resource_accesses() {
+        let res = &app.resources[name];
+        if let Some(location) = locations.get_mut(name) {
+            if location.is_some() && location.as_ref() != Some(&core) {
+                // shared between different cores
+                *location = None;
+                debug_assert!(res.mutability.is_none());
+                assert_sync.insert(res.ty.clone());
+            }
+        } else {
+            locations.insert(name.clone(), Some(core));
         }
 
-        if let Some(ownership) = ownerships.get_mut(res) {
-            match *ownership {
-                Ownership::Owned { priority: ceiling }
-                | Ownership::CoOwned { priority: ceiling }
-                | Ownership::Shared { ceiling }
-                    if priority != ceiling =>
-                {
-                    *ownership = Ownership::Shared {
-                        ceiling: cmp::max(ceiling, priority),
-                    };
+        if let Some(priority) = priority {
+            if let Some(ownership) = ownerships.get_mut(name) {
+                match *ownership {
+                    Ownership::Owned { priority: ceiling }
+                    | Ownership::CoOwned { priority: ceiling }
+                    | Ownership::Shared { ceiling }
+                        if priority != ceiling =>
+                    {
+                        *ownership = Ownership::Shared {
+                            ceiling: cmp::max(ceiling, priority),
+                        };
 
-                    let res = &app.resources[res];
-                    if res.mutability.is_none() {
-                        assert_sync.insert(res.ty.clone());
+                        if res.mutability.is_none() {
+                            assert_sync.insert(res.ty.clone());
+                        }
+                    }
+                    Ownership::Owned { priority: ceiling } if ceiling == priority => {
+                        *ownership = Ownership::CoOwned { priority };
+                    }
+                    _ => {}
+                }
+            } else {
+                ownerships.insert(name.clone(), Ownership::Owned { priority });
+            }
+        }
+    }
+
+    // Determine which core initializes which resource
+    let mut late_resources: BTreeMap<_, Idents> = BTreeMap::new();
+    let mut resources = app
+        .resources
+        .iter()
+        .filter_map(|(name, res)| {
+            if res.expr.is_none() {
+                Some(name.clone())
+            } else {
+                None
+            }
+        })
+        .collect::<Idents>();
+    if !resources.is_empty() {
+        let mut rest = None;
+        for (core, init) in app.mains.iter().zip(0..).filter_map(|(main, core)| {
+            main.init.as_ref().and_then(|init| {
+                if init.returns_late_resources {
+                    Some((core, init))
+                } else {
+                    None
+                }
+            })
+        }) {
+            if init.args.late.is_empty() {
+                rest = Some(core);
+            } else {
+                let late_resources = late_resources.entry(core).or_default();
+
+                for name in &init.args.late {
+                    late_resources.insert(name.clone());
+                    resources.remove(name);
+
+                    if let Some(location) = locations.get_mut(name) {
+                        if location.is_some() && location.as_ref() != Some(&core) {
+                            // shared between different cores
+                            *location = None;
+                        }
+                    } else {
+                        locations.insert(name.clone(), Some(core));
                     }
                 }
-                Ownership::Owned { priority: ceiling } if ceiling == priority => {
-                    *ownership = Ownership::CoOwned { priority };
-                }
-                _ => {}
             }
-
-            continue;
         }
 
-        ownerships.insert(res.clone(), Ownership::Owned { priority });
-    }
-
-    // Compute sizes of free queues
-    // We assume at most one message per `spawn` / `schedule`
-    let mut tasks: HashMap<_, _> = app
-        .tasks
-        .keys()
-        .map(|task| (task.clone(), Task::default()))
-        .collect();
-    for spawn in app.spawn_calls() {
-        let task = tasks.get_mut(spawn.task).expect("unreachable");
-
-        if spawn.cross {
-            task.shared.capacity += 1;
-        } else {
-            task.local.capacity += 1;
-        }
-    }
-
-    // TODO need some way to only override the local queue or the shared queue
-    // Override computed capacities if user specified a capacity in `#[task]`
-    for (name, task) in &app.tasks {
-        if let Some(cap) = task.args.capacity {
-            let task = tasks.get_mut(name).expect("unreachable");
-
-            task.local.capacity = cap;
-            task.shared.capacity = cap;
-        }
-    }
-
-    // Compute dispatchers capacities
-    // Determine which tasks are dispatched by which dispatcher
-    let mut dispatchers: Vec<_> = (0..app.cores)
-        .map(|core| {
-            let mut dispatchers = BTreeMap::new();
-
-            let mut sorted_tasks = app
-                .tasks
-                .iter()
-                .filter(|(_, task)| task.core == core)
-                .collect::<Vec<_>>();
-
-            sorted_tasks.sort_by(|l, r| l.1.args.priority.cmp(&r.1.args.priority));
-
-            let mut sgi = 0;
-            for (name, task) in sorted_tasks {
-                let dispatcher =
-                    dispatchers
-                        .entry(task.args.priority)
-                        .or_insert_with(|| Dispatcher {
-                            sgi: {
-                                let old = sgi;
-                                sgi += 1;
-                                old
-                            },
-                            capacity: 0,
-                            ceiling: 0,
-                            tasks: vec![],
-                            shared: false,
-                        });
-
-                let task = &tasks[name];
-                dispatcher.capacity += task.local.capacity + task.shared.capacity;
-
-                if task.local.capacity != 0 {
-                    dispatcher.tasks.push((name.clone(), false));
-                }
-
-                if task.shared.capacity != 0 {
-                    dispatcher.shared = true;
-                    dispatcher.tasks.push((name.clone(), true));
+        if let Some(rest) = rest {
+            for name in &resources {
+                if let Some(location) = locations.get_mut(name) {
+                    if location.is_some() && location.as_ref() != Some(&rest) {
+                        // shared between different cores
+                        *location = None;
+                    }
+                } else {
+                    locations.insert(name.clone(), Some(rest));
                 }
             }
 
-            dispatchers
-        })
-        .collect();
+            late_resources.insert(rest, resources);
+        }
+    }
+
+    // Check for cross-initialization
+    let mut post_rendezvous: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
+    for (user, _, resource) in app.resource_accesses() {
+        for (&initializer, resources) in &late_resources {
+            if initializer == user {
+                continue;
+            }
+
+            if resources.contains(resource) {
+                post_rendezvous.entry(user).or_default().insert(initializer);
+            }
+        }
+    }
 
     // All messages sent from `init` need to be `Send`
     let mut tasks_assert_send = HashSet::new();
-    for task in app.mains.iter().flat_map(|main| &main.init.args.spawn) {
+    for task in app
+        .mains
+        .iter()
+        .flat_map(|main| main.init.iter().flat_map(|init| &init.args.spawn))
+    {
         tasks_assert_send.insert(task.clone());
     }
 
@@ -232,7 +277,11 @@ pub fn app(app: &App) -> Analysis {
 
     // All resources shared with init need to be `Send`, unless they are owned by `idle`
     // This is equivalent to late initialization (e.g. `static mut LATE: Option<T> = None`)
-    for name in app.mains.iter().flat_map(|main| &main.init.args.resources) {
+    for name in app
+        .mains
+        .iter()
+        .flat_map(|main| main.init.iter().flat_map(|init| &init.args.resources))
+    {
         let owned_by_idle = Ownership::Owned { priority: 0 };
         if ownerships
             .get(name)
@@ -243,29 +292,71 @@ pub fn app(app: &App) -> Analysis {
         }
     }
 
+    // Assign SGIs to priority levels
+    let used_sgis = app
+        .interrupts
+        .keys()
+        .filter_map(|name| {
+            let name = name.to_string();
+
+            if name.starts_with("SG") {
+                name[2..]
+                    .parse::<u8>()
+                    .ok()
+                    .and_then(|i| if i < NSGIS { Some(i) } else { None })
+            } else {
+                None
+            }
+        })
+        .collect::<BTreeSet<_>>();
+    let mut sgis: Vec<Sgis> = vec![Sgis::default(); usize::from(app.cores)];
+    for task in app.tasks.values() {
+        let core = task.args.core;
+
+        sgis[usize::from(core)].insert(task.args.priority, &used_sgis);
+    }
+
     // Ceiling analysis of free queues (consumer end point)
     // Ceiling analysis of ready queues (producer end point)
+    let mut pre_rendezvous: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
+    let mut free_queues = FreeQueues::new();
+    let mut dispatchers: Dispatchers = vec![BTreeMap::new(); usize::from(app.cores)];
     for spawn in app.spawn_calls() {
-        if let Some(prio) = spawn.priority {
-            // Users of `spawn` contend for the to-be-spawned task FREE_QUEUE and ..
-            let task = tasks.get_mut(&spawn.task).expect("unreachable");
-            if spawn.cross {
-                task.shared.ceiling = cmp::max(task.shared.ceiling, prio);
-            } else {
-                task.local.ceiling = cmp::max(task.local.ceiling, prio);
+        let task = &app.tasks[spawn.task];
+        let spawnee_core = task.args.core;
+        let spawnee_priority = task.args.priority;
+
+        if spawn.core != spawnee_core {
+            pre_rendezvous
+                .entry(spawnee_core)
+                .or_default()
+                .insert(spawn.core);
+        }
+
+        let dispatcher = dispatchers[usize::from(spawnee_core)]
+            .entry(spawnee_priority)
+            .or_default();
+
+        let route = dispatcher.entry(spawn.core).or_default();
+        route.tasks.insert(spawn.task.clone());
+
+        let fq_ceiling = free_queues
+            .entry(spawn.task.clone())
+            .or_default()
+            .entry(spawn.core)
+            .or_default();
+
+        if let Some(priority) = spawn.priority {
+            // Spawner task contends for the ready queue
+            match route.ceiling {
+                None => route.ceiling = Some(priority),
+                Some(ceiling) => route.ceiling = Some(cmp::max(priority, ceiling)),
             }
 
-            // .. also for the dispatcher READY_QUEUE
-            let task = &app.tasks[spawn.task];
-            let dispatcher = dispatchers[usize::from(task.core)]
-                .get_mut(&task.args.priority)
-                .expect("unreachable");
-            dispatcher.ceiling = cmp::max(dispatcher.ceiling, prio);
-
-            // Send is required when sending messages from a task whose priority doesn't match the
-            // priority of the receiving task
-            if task.args.priority != prio {
-                tasks_assert_send.insert(spawn.task.clone());
+            // Spawner task contends for the free queue
+            match fq_ceiling {
+                None => *fq_ceiling = Some(priority),
+                Some(ceiling) => *fq_ceiling = Some(cmp::max(*ceiling, priority)),
             }
         } else {
             // spawns from `init` are excluded from the ceiling analysis
@@ -275,9 +366,14 @@ pub fn app(app: &App) -> Analysis {
     Analysis {
         assert_sync,
         dispatchers,
+        free_queues,
+        late_resources,
+        locations,
         ownerships,
+        pre_rendezvous,
+        post_rendezvous,
         resources_assert_send,
-        tasks,
+        sgis,
         tasks_assert_send,
     }
 }

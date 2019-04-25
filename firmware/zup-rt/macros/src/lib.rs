@@ -1,47 +1,29 @@
+#![deny(warnings)]
+
 extern crate proc_macro;
 
 use proc_macro::TokenStream;
-use std::{
-    collections::HashSet,
-    sync::atomic::{AtomicUsize, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::collections::HashSet;
 
 use proc_macro2::Span;
 use quote::quote;
-use rand::{Rng, SeedableRng};
 use syn::{
-    parse, parse_macro_input, spanned::Spanned, Ident, Item, ItemFn, ItemStatic, ReturnType, Stmt,
-    Type, Visibility,
+    parse, parse_macro_input, spanned::Spanned, Item, ItemFn, ItemStatic, ReturnType, Stmt, Type,
+    Visibility,
 };
 
-static CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
-
-// NOTE copy-paste from cortex-r-rt-macros v0.1.3
 #[proc_macro_attribute]
 pub fn entry(args: TokenStream, input: TokenStream) -> TokenStream {
     let f = parse_macro_input!(input as ItemFn);
 
     // check the function signature
-    let valid_signature = f.constness.is_none()
-        && f.vis == Visibility::Inherited
-        && f.abi.is_none()
-        && f.decl.inputs.is_empty()
-        && f.decl.generics.params.is_empty()
-        && f.decl.generics.where_clause.is_none()
-        && f.decl.variadic.is_none()
-        && match f.decl.output {
-            ReturnType::Default => false,
-            ReturnType::Type(_, ref ty) => match **ty {
-                Type::Never(_) => true,
-                _ => false,
-            },
-        };
+    let valid_signature =
+        check_signature(&f) && f.decl.inputs.is_empty() && is_bottom(&f.decl.output);
 
     if !valid_signature {
         return parse::Error::new(
             f.span(),
-            "`#[entry]` function must have signature `[unsafe] fn() -> !`",
+            "`#[entry]` function must have signature `fn() -> !`",
         )
         .to_compile_error()
         .into();
@@ -53,43 +35,28 @@ pub fn entry(args: TokenStream, input: TokenStream) -> TokenStream {
             .into();
     }
 
-    // XXX should we blacklist other attributes?
     let attrs = f.attrs;
-    let unsafety = f.unsafety;
-    let hash = random_ident();
     let (statics, stmts) = match extract_static_muts(f.block.stmts) {
         Err(e) => return e.to_compile_error().into(),
         Ok(x) => x,
     };
 
-    let vars = statics
-        .into_iter()
-        .map(|var| {
-            let attrs = var.attrs;
-            let ident = var.ident;
-            let ty = var.ty;
-            let expr = var.expr;
+    let (args, items, vals) = locals(&statics);
 
-            quote!(
-                #[allow(non_snake_case)]
-                let #ident: &'static mut #ty = unsafe {
-                    #(#attrs)*
-                    static mut #ident: #ty = #expr;
-
-                    &mut #ident
-                };
-            )
-        })
-        .collect::<Vec<_>>();
-
+    let ident = f.ident;
     quote!(
-        #[export_name = "main"]
-        #[link_section = ".main"]
-        #(#attrs)*
-        #unsafety fn #hash() -> ! {
-            #(#vars)*
-
+        #[inline(always)]
+        fn #ident(#(#args,)*) -> ! {
             #(#stmts)*
+
+            #[export_name = "main"]
+            #[link_section = ".main"]
+            #(#attrs)*
+            unsafe extern "C" fn __entry__() -> ! {
+                #(#items;)*
+
+                #ident(#(#vals,)*)
+            }
         }
     )
     .into()
@@ -106,51 +73,36 @@ pub fn exception(args: TokenStream, input: TokenStream) -> TokenStream {
     }
 
     let fspan = f.span();
+    let valid_signature =
+        check_signature(&f) && f.decl.inputs.is_empty() && is_bottom(&f.decl.output);
+
+    if !valid_signature {
+        return parse::Error::new(fspan, "This exception must have signature `fn() -> !`")
+            .to_compile_error()
+            .into();
+    }
+
     let ident = f.ident;
 
     let ident_s = ident.to_string();
 
-    // XXX should we blacklist other attributes?
     let attrs = f.attrs;
     let block = f.block;
     let stmts = block.stmts;
-    let unsafety = f.unsafety;
-
-    let hash = random_ident();
-    let valid_signature = f.constness.is_none()
-        && f.vis == Visibility::Inherited
-        && f.abi.is_none()
-        && f.decl.inputs.is_empty()
-        && f.decl.generics.params.is_empty()
-        && f.decl.generics.where_clause.is_none()
-        && f.decl.variadic.is_none()
-        && match f.decl.output {
-            ReturnType::Default => false,
-            ReturnType::Type(_, ref ty) => match **ty {
-                Type::Never(..) => true,
-                _ => false,
-            },
-        };
-
-    if !valid_signature {
-        return parse::Error::new(
-            fspan,
-            "This exception must have signature `[unsafe] fn() -> !`",
-        )
-        .to_compile_error()
-        .into();
-    }
 
     quote!(
-        #[export_name = #ident_s]
-        #(#attrs)*
-        pub #unsafety extern "C" fn #hash() -> ! {
-            extern crate zup_rt;
-
+        #[allow(non_snake_case)]
+        fn #ident() -> ! {
             // check that this exception actually exists
             zup_rt::Exception::#ident;
 
             #(#stmts)*
+
+            #[export_name = #ident_s]
+            #(#attrs)*
+            unsafe extern "C" fn __exception__() {
+                #ident()
+            }
         }
     )
     .into()
@@ -167,83 +119,80 @@ pub fn interrupt(args: TokenStream, input: TokenStream) -> TokenStream {
     }
 
     let fspan = f.span();
-    let ident = f.ident;
-
-    let ident_s = ident.to_string();
-    // XXX should we blacklist other attributes?
-    let attrs = f.attrs;
-    let block = f.block;
-    let stmts = block.stmts;
-    let unsafety = f.unsafety;
-
-    let hash = random_ident();
-    let valid_signature = f.constness.is_none()
-        && f.vis == Visibility::Inherited
-        && f.abi.is_none()
-        && f.decl.inputs.is_empty()
-        && f.decl.generics.params.is_empty()
-        && f.decl.generics.where_clause.is_none()
-        && f.decl.variadic.is_none()
-        && match f.decl.output {
-            ReturnType::Default => true,
-            ReturnType::Type(_, ref ty) => match **ty {
-                Type::Tuple(ref tuple) => tuple.elems.is_empty(),
-                Type::Never(..) => true,
-                _ => false,
-            },
-        };
+    let valid_signature =
+        check_signature(&f) && f.decl.inputs.is_empty() && is_unit(&f.decl.output);
 
     if !valid_signature {
         return parse::Error::new(
             fspan,
-            "`#[exception]` handlers other than `DefaultHandler` and `Undefined` must have \
-             signature `[unsafe] fn() [-> !]`",
+            "`#[interrupts]` handlers must have  signature `fn() `",
         )
         .to_compile_error()
         .into();
     }
+
+    let ident = f.ident;
+
+    let ident_s = ident.to_string();
+    let attrs = f.attrs;
+    let block = f.block;
+    let stmts = block.stmts;
 
     let (statics, stmts) = match extract_static_muts(stmts) {
         Err(e) => return e.to_compile_error().into(),
         Ok(x) => x,
     };
 
-    // FIXME this is not correct for the FIQ and maybe other exception handlers
-    let vars = statics
-        .into_iter()
-        .map(|var| {
-            let attrs = var.attrs;
-            let ident = var.ident;
-            let ty = var.ty;
-            let expr = var.expr;
-
-            quote!(
-                #[allow(non_snake_case)]
-                let #ident: &mut #ty = unsafe {
-                    #(#attrs)*
-                    static mut #ident: #ty = #expr;
-
-                    &mut #ident
-                };
-            )
-        })
-        .collect::<Vec<_>>();
+    let (_, items, vals) = locals(&statics);
 
     quote!(
-        #[export_name = #ident_s]
-        #(#attrs)*
-        pub #unsafety extern "C" fn #hash() {
-            extern crate zup_rt;
-
-            // check that this exception actually exists
-            zup_rt::Interrupt::#ident;
-
-            #(#vars)*
-
+        #[allow(non_snake_case)]
+        fn #ident() {
             #(#stmts)*
+
+            #[export_name = #ident_s]
+            #(#attrs)*
+            fn __interrupt__() {
+                #(#items;)*
+
+                // check that this interrupt actually exists
+                zup_rt::Interrupt::#ident;
+
+                #ident(#(#vals,)*)
+            }
         }
     )
     .into()
+}
+
+fn locals(
+    statics: &[ItemStatic],
+) -> (
+    // args
+    Vec<proc_macro2::TokenStream>,
+    // items
+    Vec<proc_macro2::TokenStream>,
+    // vals
+    Vec<proc_macro2::TokenStream>,
+) {
+    let mut args = vec![];
+    let mut items = vec![];
+    let mut vals = vec![];
+    for static_ in statics {
+        let attrs = &static_.attrs;
+        let ident = &static_.ident;
+        let expr = &static_.expr;
+        let ty = &static_.ty;
+
+        args.push(quote!(#ident: &'static mut #ty));
+        items.push(quote!(
+            #(#attrs)*
+            static mut #ident: #ty = #expr
+        ));
+        vals.push(quote!(&mut #ident));
+    }
+
+    (args, items, vals)
 }
 
 // NOTE copy-paste from cortex-r-rt-macros v0.1.3
@@ -282,36 +231,42 @@ fn extract_static_muts(stmts: Vec<Stmt>) -> Result<(Vec<ItemStatic>, Vec<Stmt>),
     Ok((statics, stmts))
 }
 
-fn random_ident() -> Ident {
-    Ident::new(&random_string(), Span::call_site())
+/// checks that a function signature
+///
+/// - has no bounds (like where clauses)
+/// - is not `async`
+/// - is not `const`
+/// - is not `unsafe`
+/// - is not generic (has no type parametrs)
+/// - is not variadic
+/// - uses the Rust ABI (and not e.g. "C")
+fn check_signature(item: &ItemFn) -> bool {
+    item.vis == Visibility::Inherited
+        && item.constness.is_none()
+        && item.asyncness.is_none()
+        && item.abi.is_none()
+        && item.unsafety.is_none()
+        && item.decl.generics.params.is_empty()
+        && item.decl.generics.where_clause.is_none()
+        && item.decl.variadic.is_none()
 }
 
-// NOTE copy-paste from cortex-r-rt-macros v0.1.3
-fn random_string() -> String {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
-    let count: u64 = CALL_COUNT.fetch_add(1, Ordering::SeqCst) as u64;
-    let mut seed: [u8; 16] = [0; 16];
-
-    for (i, v) in seed.iter_mut().take(8).enumerate() {
-        *v = ((secs >> (i * 8)) & 0xFF) as u8
+fn is_bottom(ret: &ReturnType) -> bool {
+    match ret {
+        ReturnType::Default => false,
+        ReturnType::Type(_, ref ty) => match **ty {
+            Type::Never(..) => true,
+            _ => false,
+        },
     }
+}
 
-    for (i, v) in seed.iter_mut().skip(8).enumerate() {
-        *v = ((count >> (i * 8)) & 0xFF) as u8
+fn is_unit(ret: &ReturnType) -> bool {
+    match ret {
+        ReturnType::Default => true,
+        ReturnType::Type(_, ref ty) => match **ty {
+            Type::Tuple(ref ty) => ty.elems.is_empty(),
+            _ => false,
+        },
     }
-
-    let mut rng = rand::rngs::SmallRng::from_seed(seed);
-    (0..16)
-        .map(|i| {
-            if i == 0 || rng.gen() {
-                ('a' as u8 + rng.gen::<u8>() % 25) as char
-            } else {
-                ('0' as u8 + rng.gen::<u8>() % 10) as char
-            }
-        })
-        .collect()
 }

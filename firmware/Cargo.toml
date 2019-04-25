@@ -9,3 +9,11 @@ members = [
   "zup-rtfm",
   "zup-rtfm/macros",
 ]
+
+[profile.dev]
+incremental = false
+
+[profile.release]
+codegen-units = 1
+debug = true
+lto = true

@@ -11,62 +11,64 @@ use cortex_r::gic::{ICC, ICD};
 use zup_rt::{entry, interrupt};
 
 #[entry]
-unsafe fn main() -> ! {
-    const IPI_CH1: u16 = 65;
+fn main() -> ! {
+    unsafe {
+        const IPI_CH1: u16 = 65;
 
-    let mut icd = ICD::take().unwrap();
-    let mut icc = ICC::take().unwrap();
-    let ipi = zup::Peripherals::steal().IPI;
+        let mut icd = ICD::steal();
+        let mut icc = ICC::steal();
+        let ipi = zup::Peripherals::steal().IPI;
 
-    // disable interrupt routing and signaling during configuration
-    icd.disable();
-    icc.disable();
+        // disable interrupt routing and signaling during configuration
+        ICD::disable();
+        ICC::disable();
 
-    // unmask SPI 65
-    ICD::unmask(IPI_CH1);
+        // unmask SPI 65
+        ICD::unmask(IPI_CH1);
 
-    // route SPI 65 to R5#0
-    icd.ICDIPTR_rw[usize::from(IPI_CH1) - 32].write(1 << 0);
+        // route SPI 65 to R5#0
+        icd.ICDIPTR_rw[usize::from(IPI_CH1) - 32].write(1 << 0);
 
-    // set priority mask to the lowest priority
-    icc.ICCPMR.write(248);
+        // set priority mask to the lowest priority
+        icc.ICCPMR.write(248);
 
-    // set the priority of IPI_CH1 to the second lowest priority
-    icd.ICDIPR[usize::from(IPI_CH1)].write(240);
+        // set the priority of IPI_CH1 to the second lowest priority
+        icd.ICDIPR[usize::from(IPI_CH1)].write(240);
 
-    // enable interrupt signaling
-    icc.ICCICR
-        .write((1 << 1) /* EnableNS */ | (1 << 0) /* EnableS */);
+        // enable interrupt signaling
+        icc.ICCICR
+            .write((1 << 1) /* EnableNS */ | (1 << 0) /* EnableS */);
 
-    // enable interrupt routing
-    icd.enable();
+        // enable interrupt routing
+        ICD::enable();
 
-    // enable receiving interrupts from channel 0 (APU)
-    ipi.ch1_ier.write(|w| w.ch0().set_bit());
+        // enable receiving interrupts from channel 0 (APU)
+        ipi.ch1_ier.write(|w| w.ch0().set_bit());
 
-    let msg = b"READY\n\0";
-    TRACE[..msg.len()].copy_from_slice(msg);
+        let msg = b"READY\n\0";
+        TRACE[..msg.len()].copy_from_slice(msg);
 
-    // IPI ourselves
-    ipi.ch1_trig.write(|w| w.ch1().set_bit());
+        // IPI ourselves
+        ipi.ch1_trig.write(|w| w.ch1().set_bit());
 
-    // unmask IRQ
-    cortex_r::enable_irq();
+        // unmask IRQ
+        cortex_r::enable_irq();
 
-    loop {
-        let isr = ipi.ch1_isr.read();
-        if isr.ch0().bit_is_set() {
-            // clear interrupt bit
-            ipi.ch1_isr.write(|w| w.ch0().set_bit());
+        loop {
+            let isr = ipi.ch1_isr.read();
+            if isr.ch0().bit_is_set() {
+                // clear interrupt bit
+                ipi.ch1_isr.write(|w| w.ch0().set_bit());
 
-            let msg = b"RECEIVED IPI FROM CH0 (POLL)\n\0";
-            TRACE[..msg.len()].copy_from_slice(msg);
-        } else if isr.ch1().bit_is_set() {
-            // clear interrupt bit
-            ipi.ch1_isr.write(|w| w.ch1().set_bit());
+                let msg = b"RECEIVED IPI FROM CH0 (POLL)\n\0";
+                TRACE[..msg.len()].copy_from_slice(msg);
+            } else if isr.ch1().bit_is_set() {
+                // clear interrupt bit
+                ipi.ch1_isr.write(|w| w.ch1().set_bit());
 
-            let msg = b"RECEIVED IPI FROM CH1 (POLL)\n\0";
-            TRACE[..msg.len()].copy_from_slice(msg);
+                let msg = b"RECEIVED IPI FROM CH1 (POLL)\n\0";
+                TRACE[..msg.len()].copy_from_slice(msg);
+            }
         }
     }
 }

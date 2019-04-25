@@ -1,9 +1,12 @@
 INCLUDE common.x;
 
+INPUT(amp-data.o);
+
 SECTIONS
 {
-  .text ORIGIN(TCM0) :
+  .text :
   {
+    __svectors = .;
     KEEP(*(.vectors));
     *(.start);
     *(.main);
@@ -15,17 +18,30 @@ SECTIONS
   {
     *(.rodata .rodata.*);
     . = ALIGN(4);
-  } > TCM0
+  } > OCM1
 
   .bss : ALIGN(4)
   {
     *(.bss .bss.*);
     . = ALIGN(4);
-  } > TCM0
+  } > OCM1
 
   .data : ALIGN(4)
   {
     *(.data .data.*);
+    . = ALIGN(4);
+  } > OCM1
+
+  /* NOTE(NOLOAD) core 0 will initialize this shared section  */
+  .shared (NOLOAD) : ALIGN(4)
+  {
+    KEEP(amp-data.o(.shared));
+    . = ALIGN(4);
+  } > OCM2
+
+  .local.data : ALIGN(4)
+  {
+    *(.local.data.*);
     . = ALIGN(4);
   } > TCM0
 
@@ -41,3 +57,5 @@ SECTIONS
     *(.ARM.exidx.*);
   }
 }
+
+ASSERT(__svectors == 0, "vector table is missing");
