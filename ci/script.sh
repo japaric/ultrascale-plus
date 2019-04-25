@@ -59,7 +59,8 @@ main() {
 
                 pushd firmware/zup-rtfm
                 for ex in ${examples[@]}; do
-                    cargo microamp --example $ex
+                    cargo microamp --example $ex --check -v
+                    cargo microamp --example $ex -v
                     cargo microamp --example $ex --release
                 done
                 popd
