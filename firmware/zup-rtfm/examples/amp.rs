@@ -15,7 +15,7 @@
 //! ```
 //!
 //! ``` text
-//! $ tail -f dcc0.log
+//! $ tail -f dcc1.log
 //! 1
 //! 3
 //! 5
