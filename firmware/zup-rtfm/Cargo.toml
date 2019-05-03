@@ -9,14 +9,15 @@ name = "rtfm"
 
 [dependencies]
 cortex-r = { path = "../cortex-r" }
-microamp = { path = "../microamp" }
+microamp = { git = "https://github.com/japaric/microamp" }
 zup = { path = "../zup" }
 zup-rt = { path = "../zup-rt" }
 zup-rtfm-macros = { path = "macros" }
 
 [dependencies.heapless]
-features = ["const-fn", "smaller-atomics"]
-version = "0.4.3"
+features = ["const-fn"]
+git = "https://github.com/japaric/heapless"
+rev = "ade3f5ecbf55fc803a87555ab4061145a95fe4d5"
 
 [dev-dependencies]
 arm-dcc = { git = "https://github.com/rust-embedded/arm-dcc" }

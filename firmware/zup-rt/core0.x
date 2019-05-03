@@ -1,12 +1,14 @@
 INCLUDE common.x;
 
-INPUT(amp-data.o);
+/* Initial stack pointer */
+__stack_top__ = ORIGIN(BTCM1_0) + LENGTH(BTCM1_0);
+
+INPUT(microamp-data.o);
 
 SECTIONS
 {
   .text :
   {
-    __svectors = .;
     KEEP(*(.vectors));
     *(.start);
     *(.main);
@@ -18,36 +20,36 @@ SECTIONS
   {
     *(.rodata .rodata.*);
     . = ALIGN(4);
-  } > OCM0
+  } > BTCM0_0
 
   .bss : ALIGN(4)
   {
     *(.bss .bss.*);
     . = ALIGN(4);
-  } > OCM0
+  } > BTCM0_0
 
   .data : ALIGN(4)
   {
     *(.data .data.*);
     . = ALIGN(4);
-  } > OCM0
-
-  .shared : ALIGN(4)
-  {
-    KEEP(amp-data.o(.shared));
-    . = ALIGN(4);
-  } > OCM2
-
-  .local.data : ALIGN(4)
-  {
-    *(.local.data.*);
-    . = ALIGN(4);
-  } > BTCM0
+  } > BTCM0_0
 
   .resource_table : ALIGN(4)
   {
     KEEP(*(.resource_table));
-  } > BTCM0
+  } > BTCM0_0
+
+  .shared : ALIGN(4)
+  {
+    KEEP(microamp-data.o(.shared));
+    . = ALIGN(4);
+  } > OCM0
+
+  .ocm : ALIGN(4)
+  {
+    *(.ocm.*);
+    . = ALIGN(4);
+  } > OCM1
 
   /* Discarded sections */
   /DISCARD/ :
@@ -56,5 +58,3 @@ SECTIONS
     *(.ARM.exidx.*);
   }
 }
-
-ASSERT(__svectors == 0, "vector table is missing");
