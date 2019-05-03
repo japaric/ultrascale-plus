@@ -43,7 +43,7 @@ main() {
 
             # multi-core examples
             if [ ${PAC:-0} == 1 ]; then
-                ( cd tools/cargo-microamp && cargo install --debug --path . -f )
+                 cargo install microamp-tools --debug --git https://github.com/japaric/microamp -f
 
                 examples=(
                     amp

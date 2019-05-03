@@ -1,7 +1,6 @@
 [workspace]
 members = [
   "cortex-r",
-  "microamp",
   "zup",
   "zup-quickstart",
   "zup-rt",

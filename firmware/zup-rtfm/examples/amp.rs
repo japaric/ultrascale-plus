@@ -49,22 +49,18 @@ static mut SHARED: usize = 0;
 
 #[entry]
 fn main() -> ! {
-    #[cfg(core = "0")]
-    const OUR_TURN: usize = CORE0;
-    #[cfg(core = "0")]
-    const OTHER_CORE: usize = CORE1;
-
-    #[cfg(not(core = "0"))]
-    const OUR_TURN: usize = CORE1;
-    #[cfg(not(core = "0"))]
-    const OTHER_CORE: usize = CORE0;
+    let (our_turn, next_core) = if cfg!(core = "0") {
+        (CORE0, CORE1)
+    } else {
+        (CORE1, CORE0)
+    };
 
     dprintln!("START");
 
     let mut done = false;
     while !done {
         // try to acquire the lock
-        while SEMAPHORE.compare_and_swap(OUR_TURN, LOCKED, Ordering::AcqRel) != OUR_TURN {
+        while SEMAPHORE.compare_and_swap(our_turn, LOCKED, Ordering::AcqRel) != our_turn {
             // spin wait
         }
 
@@ -80,7 +76,7 @@ fn main() -> ! {
         }
 
         // release the lock / unblock the other core
-        SEMAPHORE.store(OTHER_CORE, Ordering::Release);
+        SEMAPHORE.store(next_core, Ordering::Release);
     }
 
     dprintln!("DONE");

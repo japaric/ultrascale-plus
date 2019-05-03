@@ -3,7 +3,7 @@ INCLUDE common.x;
 /* Initial stack pointer */
 __stack_top__ = ORIGIN(BTCM1_0) + LENGTH(BTCM1_0);
 
-INPUT(amp-data.o);
+INPUT(microamp-data.o);
 
 SECTIONS
 {
@@ -41,7 +41,7 @@ SECTIONS
 
   .shared : ALIGN(4)
   {
-    KEEP(amp-data.o(.shared));
+    KEEP(microamp-data.o(.shared));
     . = ALIGN(4);
   } > OCM0
 
