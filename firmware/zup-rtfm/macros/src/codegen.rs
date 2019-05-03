@@ -1374,6 +1374,7 @@ fn locals(
             quote!('a)
         };
 
+        let attrs = &static_.attrs;
         let cfgs = &static_.cfgs;
         let expr = &static_.expr;
         let ty = &static_.ty;
@@ -1388,6 +1389,7 @@ fn locals(
         ));
 
         items.push(quote!(
+            #(#attrs)*
             #(#cfgs)*
             static mut #name: #ty = #expr
         ));
