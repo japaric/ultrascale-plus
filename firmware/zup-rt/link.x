@@ -1,5 +1,8 @@
 INCLUDE common.x;
 
+/* Initial stack pointer */
+__stack_top__ = ORIGIN(BTCM1) + LENGTH(BTCM1);
+
 SECTIONS
 {
   .text ORIGIN(ATCM) :
