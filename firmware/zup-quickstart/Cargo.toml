@@ -20,6 +20,22 @@ required-features = ["pac"]
 name = "ipi-rpu"
 required-features = ["pac"]
 
+[[example]]
+name = "rtfm-interrupt"
+required-features = ["pac"]
+
+[[example]]
+name = "rtfm-lock"
+required-features = ["pac"]
+
+[[example]]
+name = "rtfm-message"
+required-features = ["pac"]
+
+[[example]]
+name = "rtfm-time"
+required-features = ["pac"]
+
 [dependencies]
 cortex-r = { path = "../cortex-r" }
 panic-dcc = { git = "https://github.com/rust-embedded/arm-dcc" }

@@ -1,10 +1,11 @@
 MEMORY
 {
   /* Global address: R5_0 - 0xFFE0_0000 | R5_1 - 0xFFE9_0000 */
-  TCM0 : ORIGIN = 0x00000000, LENGTH = 64K
+  ATCM : ORIGIN = 0x00000000, LENGTH = 64K
 
   /* Global address: R5_0 - 0xFFE2_0000 | R5_1 - 0xFFEB_0000 */
-  TCM1 : ORIGIN = 0x00020000, LENGTH = 64K
+  BTCM0 : ORIGIN = 0x00020000, LENGTH = 32K
+  BTCM1 : ORIGIN = 0x00028000, LENGTH = 32K
 
   DDR  : ORIGIN = 0x00100000, LENGTH = 2047M
 
@@ -46,4 +47,4 @@ PROVIDE(IPI_CH1 = DefaultHandler);
 PROVIDE(IPI_CH2 = DefaultHandler);
 
 /* Initial stack pointer */
-__stack_top__ = ORIGIN(TCM0) + LENGTH(TCM0);
+__stack_top__ = ORIGIN(BTCM1) + LENGTH(BTCM1);
