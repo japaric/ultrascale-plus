@@ -12,7 +12,7 @@ SECTIONS
     *(.main);
     *(.text .text.*);
     . = ALIGN(4);
-  } > TCM0
+  } > ATCM
 
   .rodata : ALIGN(4)
   {
@@ -42,12 +42,12 @@ SECTIONS
   {
     *(.local.data.*);
     . = ALIGN(4);
-  } > TCM0
+  } > BTCM0
 
   .resource_table : ALIGN(4)
   {
     KEEP(*(.resource_table));
-  } > TCM0
+  } > BTCM0
 
   /* Discarded sections */
   /DISCARD/ :

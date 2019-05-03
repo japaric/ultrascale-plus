@@ -18,13 +18,13 @@ start:
   mov r12,#0
   ldr sp,=__stack_top__        /* initialize the stack pointer */
   mov lr,#0
+  mrc p15, 0, r0, c1, c0, 1    /* read ACTLR */
+  /*  FIXME properly initialize ECC instead of disabling it */
+  bic r0, r0, #7 << 25         /* disable ATCM, BTCM{0,1} ECC */
+  mcr p15, 0, r0, cr1, cr0, 1  /* write ACTLR */
   mrc p15, 0, r0, c1, c0, 0    /* read SCTLR */
   bic r0, r0, #1 << 13         /* clear V bit to map the vector table to address 0 */
   mcr p15, 0, r0, cr1, cr0, 0  /* write SCTLR */
-  mrc p15, 0, r0, c1, c0, 1    /* read ACTLR */
-  /*  FIXME properly initialize ECC instead of disabling it */
-  bic r0, r0, #1 << 25         /* disable ATCM ECC */
-  mcr p15, 0, r0, cr1, cr0, 1  /* write ACTLR */
   b main
 
   .section .vectors, "ax"
