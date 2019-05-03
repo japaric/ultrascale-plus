@@ -167,12 +167,13 @@ fn resources(
         let res = &app.resources[name];
 
         let attrs = &res.attrs;
+        let ocm = link_ocm(res.has_ocm && core.is_some());
         let ty = &res.ty;
         let cfgs = &res.cfgs;
 
         let cfg_core = core.and_then(|core| app.cfg_core(core));
         let link_section = if core.is_some() {
-            link_local(app, "data")
+            None
         } else {
             Some(quote!(#[rtfm::export::shared]))
         };
@@ -183,6 +184,7 @@ fn resources(
                 #(#cfgs)*
                 #cfg_core
                 #link_section
+                #ocm
                 static mut #name: #ty = #expr;
             ));
         } else {
@@ -191,6 +193,7 @@ fn resources(
                 #(#cfgs)*
                 #cfg_core
                 #link_section
+                #ocm
                 static mut #name: rtfm::export::MaybeUninit<#ty> =
                     rtfm::export::MaybeUninit::uninit();
             ));
@@ -376,7 +379,7 @@ fn tasks(
                 let (cfg_fq, mk_loc, fq_ty, expr) = if receiver == sender {
                     (
                         cfg_sender.clone(),
-                        Box::new(|| link_local(app, "data")) as Box<Fn() -> _>,
+                        Box::new(|| None) as Box<Fn() -> _>,
                         quote!(rtfm::export::SCFQ<#cap_ty>),
                         quote!(unsafe { rtfm::export::SCFQ::u8_sc() }),
                     )
@@ -507,7 +510,7 @@ fn dispatchers(app: &App, analysis: &Analysis) -> Vec<proc_macro2::TokenStream> 
                 let (cfg_rq, mk_loc, rq_ty, expr) = if receiver == sender {
                     (
                         cfg_sender.clone(),
-                        Box::new(|| link_local(app, "data")) as Box<Fn() -> _>,
+                        Box::new(|| None) as Box<Fn() -> _>,
                         quote!(rtfm::export::SCRQ<#t, #cap_ty>),
                         quote!(unsafe { rtfm::export::SCRQ::u8_sc() }),
                     )
@@ -1061,18 +1064,14 @@ fn idle(
 }
 
 /* Support code */
-fn link_local(app: &App, section: &str) -> Option<proc_macro2::TokenStream> {
-    if app.cores == 1 {
-        None
-    } else {
+fn link_ocm(has_ocm: bool) -> Option<proc_macro2::TokenStream> {
+    if has_ocm {
         static COUNT: AtomicUsize = AtomicUsize::new(0);
 
-        let section = format!(
-            ".local.{}.{}",
-            section,
-            COUNT.fetch_add(1, Ordering::Relaxed)
-        );
+        let section = format!(".ocm.{}", COUNT.fetch_add(1, Ordering::Relaxed));
         Some(quote!(#[link_section = #section]))
+    } else {
+        None
     }
 }
 
@@ -1377,6 +1376,7 @@ fn locals(
         let attrs = &static_.attrs;
         let cfgs = &static_.cfgs;
         let expr = &static_.expr;
+        let ocm = link_ocm(static_.has_ocm);
         let ty = &static_.ty;
 
         if !cfgs.is_empty() {
@@ -1391,6 +1391,7 @@ fn locals(
         items.push(quote!(
             #(#attrs)*
             #(#cfgs)*
+            #ocm
             static mut #name: #ty = #expr
         ));
 

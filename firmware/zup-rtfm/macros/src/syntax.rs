@@ -402,6 +402,7 @@ pub struct Static {
     pub attrs: Vec<Attribute>,
     pub cfgs: Vec<Attribute>,
     pub expr: Box<Expr>,
+    pub has_ocm: bool,
     pub ty: Box<Type>,
 }
 
@@ -418,6 +419,7 @@ impl Static {
             }
 
             let (cfgs, attrs) = extract_cfgs(item.attrs);
+            let (has_ocm, attrs) = extract_ocm(attrs);
 
             statics.insert(
                 item.ident,
@@ -425,6 +427,7 @@ impl Static {
                     attrs,
                     cfgs,
                     expr: item.expr,
+                    has_ocm,
                     ty: item.ty,
                 },
             );
@@ -720,6 +723,7 @@ pub struct Resource {
     pub attrs: Vec<Attribute>,
     pub cfgs: Vec<Attribute>,
     pub expr: Option<Box<Expr>>,
+    pub has_ocm: bool,
     pub mutability: Option<Token![mut]>,
     pub ty: Box<Type>,
 }
@@ -741,11 +745,13 @@ impl Resource {
         };
 
         let (cfgs, attrs) = extract_cfgs(item.attrs);
+        let (has_ocm, attrs) = extract_ocm(attrs);
 
         Ok(Resource {
             attrs,
             cfgs,
             expr: if uninitialized { None } else { Some(item.expr) },
+            has_ocm,
             mutability: item.mutability,
             ty: item.ty,
         })
@@ -1169,6 +1175,16 @@ fn extract_cfgs(attrs: Vec<Attribute>) -> (Vec<Attribute>, Vec<Attribute>) {
     }
 
     (cfgs, not_cfgs)
+}
+
+fn extract_ocm(mut attrs: Vec<Attribute>) -> (bool, Vec<Attribute>) {
+    if let Some(pos) = attrs.iter().position(|attr| eq(attr, "ocm")) {
+        attrs.swap_remove(pos);
+
+        (true, attrs)
+    } else {
+        (false, attrs)
+    }
 }
 
 /// Extracts `static mut` vars from the beginning of the given statements
