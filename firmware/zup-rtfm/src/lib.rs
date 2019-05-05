@@ -58,6 +58,7 @@ impl<T> LocalSend for Local<T> where &'static mut T: Send {}
 impl<T> !Send for Local<T> {}
 
 /// A measurement of a monotonically nondecreasing clock. Opaque and useful only with `Duration`.
+#[derive(Clone, Copy)]
 pub struct Instant(i32);
 
 impl Instant {

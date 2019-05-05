@@ -14,16 +14,20 @@ const APP: () = {
 
     #[task(core = 0, spawn = [pong])]
     fn ping(c: ping::Context) {
-        let now = Instant::now();
+        let x = Instant::now();
+        c.spawn.pong(x).ok();
+        let y = Instant::now();
 
-        c.spawn.pong(now).ok();
+        if let Some(dur) = y.checked_duration_since(x) {
+            print(dur);
+        }
     }
 
     #[task(core = 1)]
-    fn pong(_: pong::Context, earlier: Instant) {
-        let now = Instant::now();
+    fn pong(_: pong::Context, x: Instant) {
+        let z = Instant::now();
 
-        if let Some(dur) = now.checked_duration_since(earlier) {
+        if let Some(dur) = z.checked_duration_since(x) {
             print(dur);
         }
     }
@@ -31,6 +35,7 @@ const APP: () = {
 
 #[inline(never)]
 fn print(dur: Duration) {
-    // 162 cycles
+    // x -> y:  84 cycles
+    // x -> z: 156 cycles
     dprintln!("{}", dur.as_cycles());
 }
