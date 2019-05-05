@@ -17,10 +17,10 @@ pub struct Analysis {
     /// Ceilings of free queues
     pub free_queues: FreeQueues,
 
-    /// all cores that spawn a particular task TODO ???
-    // pub routes: BTreeMap<Ident, BTreeSet<u8>>,
+    pub resources_assert_local_send: HashSet<Box<Type>>,
     pub resources_assert_send: HashSet<Box<Type>>,
 
+    pub tasks_assert_local_send: HashSet<Ident>,
     pub tasks_assert_send: HashSet<Ident>,
 
     /// Types of RO resources that need to be Sync
@@ -251,44 +251,58 @@ pub fn app(app: &App) -> Analysis {
         }
     }
 
-    // All messages sent from `init` need to be `Send`
+    // All messages sent from `init` need to be `Send` or `LocalSend`
     let mut tasks_assert_send = HashSet::new();
-    for task in app
-        .mains
-        .iter()
-        .flat_map(|main| main.init.iter().flat_map(|init| &init.args.spawn))
-    {
-        tasks_assert_send.insert(task.clone());
-    }
+    let mut tasks_assert_local_send = HashSet::new();
+    for (sender, task) in app.mains.iter().zip(0..).flat_map(|(main, sender)| {
+        main.init
+            .iter()
+            .flat_map(move |init| init.args.spawn.iter().map(move |task| (sender, task)))
+    }) {
+        let receiver = app.tasks[task].args.core;
 
-    // All late resources need to be `Send`, unless they are owned by `idle`
-    let mut resources_assert_send = HashSet::new();
-    for (name, res) in &app.resources {
-        let owned_by_idle = Ownership::Owned { priority: 0 };
-        if res.expr.is_none()
-            && ownerships
-                .get(name)
-                .map(|ship| *ship != owned_by_idle)
-                .unwrap_or(false)
-        {
-            resources_assert_send.insert(res.ty.clone());
+        if sender == receiver {
+            tasks_assert_local_send.insert(task.clone());
+        } else {
+            tasks_assert_send.insert(task.clone());
         }
     }
 
-    // All resources shared with init need to be `Send`, unless they are owned by `idle`
-    // This is equivalent to late initialization (e.g. `static mut LATE: Option<T> = None`)
-    for name in app
-        .mains
-        .iter()
-        .flat_map(|main| main.init.iter().flat_map(|init| &init.args.resources))
-    {
+    let mut resources_assert_local_send = HashSet::new();
+    let mut resources_assert_send = HashSet::new();
+
+    // All late resources need to be `Send` or `LocalSend`, except maybe for resources owned by
+    // `idle`
+    for (name, ty) in app.resources.iter().filter_map(|(name, res)| {
+        if res.expr.is_none() {
+            Some((name, &res.ty))
+        } else {
+            None
+        }
+    }) {
+        if locations[name].is_none() {
+            // cross-initialized
+            resources_assert_send.insert(ty.clone());
+        } else {
+            let owned_by_idle = Ownership::Owned { priority: 0 };
+            if ownerships.get(name).expect("UNREACHABLE") != &owned_by_idle {
+                resources_assert_local_send.insert(ty.clone());
+            }
+        }
+    }
+
+    // All resources shared with `init` (ownership != None) need to be `LocalSend`
+    for name in app.mains.iter().flat_map(|main| {
+        main.init.iter().flat_map(|init| {
+            init.args
+                .resources
+                .iter()
+                .filter(|res| ownerships.get(res).is_some())
+        })
+    }) {
         let owned_by_idle = Ownership::Owned { priority: 0 };
-        if ownerships
-            .get(name)
-            .map(|ship| *ship != owned_by_idle)
-            .unwrap_or(false)
-        {
-            resources_assert_send.insert(app.resources[name].ty.clone());
+        if ownerships.get(name).expect("UNREACHABLE") != &owned_by_idle {
+            resources_assert_local_send.insert(app.resources[name].ty.clone());
         }
     }
 
@@ -331,6 +345,9 @@ pub fn app(app: &App) -> Analysis {
                 .entry(spawnee_core)
                 .or_default()
                 .insert(spawn.core);
+
+            // messages that cross the core boundary need to be `Send`
+            tasks_assert_send.insert(spawn.task.clone());
         }
 
         let dispatcher = dispatchers[usize::from(spawnee_core)]
@@ -358,6 +375,12 @@ pub fn app(app: &App) -> Analysis {
                 None => *fq_ceiling = Some(priority),
                 Some(ceiling) => *fq_ceiling = Some(cmp::max(*ceiling, priority)),
             }
+
+            // LocalSend is required when sending messages from a task whose priority doesn't match
+            // the priority of the receiving task
+            if spawn.core == spawnee_core && spawnee_priority != priority {
+                tasks_assert_local_send.insert(spawn.task.clone());
+            }
         } else {
             // spawns from `init` are excluded from the ceiling analysis
         }
@@ -372,8 +395,10 @@ pub fn app(app: &App) -> Analysis {
         ownerships,
         pre_rendezvous,
         post_rendezvous,
+        resources_assert_local_send,
         resources_assert_send,
         sgis,
+        tasks_assert_local_send,
         tasks_assert_send,
     }
 }

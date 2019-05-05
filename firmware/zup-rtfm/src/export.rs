@@ -120,9 +120,26 @@ pub fn logical2hw(logical: u8) -> u8 {
     ((1 << PRIORITY_BITS) - logical) << (8 - PRIORITY_BITS)
 }
 
+// reject `&'static T` because it may be pointing into `.rodata`
+pub fn assert_cross_send<T>()
+where
+    T: Send + NotStaticRef,
+{
+}
+
+pub auto trait NotStaticRef {}
+
+impl<T> !NotStaticRef for &'static T where T: ?Sized {}
+
 pub fn assert_send<T>()
 where
     T: Send,
+{
+}
+
+pub fn assert_local_send<T>()
+where
+    T: crate::LocalSend,
 {
 }
 

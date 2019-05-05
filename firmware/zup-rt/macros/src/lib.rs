@@ -45,6 +45,7 @@ pub fn entry(args: TokenStream, input: TokenStream) -> TokenStream {
 
     let ident = f.ident;
     quote!(
+        #[allow(non_snake_case)]
         #[inline(always)]
         fn #ident(#(#args,)*) -> ! {
             #(#stmts)*

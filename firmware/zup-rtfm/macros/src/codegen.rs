@@ -167,13 +167,12 @@ fn resources(
         let res = &app.resources[name];
 
         let attrs = &res.attrs;
-        let ocm = link_ocm(res.has_ocm && core.is_some());
         let ty = &res.ty;
         let cfgs = &res.cfgs;
 
         let cfg_core = core.and_then(|core| app.cfg_core(core));
         let link_section = if core.is_some() {
-            None
+            link_local(app, false)
         } else {
             Some(quote!(#[rtfm::export::shared]))
         };
@@ -184,7 +183,6 @@ fn resources(
                 #(#cfgs)*
                 #cfg_core
                 #link_section
-                #ocm
                 static mut #name: #ty = #expr;
             ));
         } else {
@@ -193,7 +191,6 @@ fn resources(
                 #(#cfgs)*
                 #cfg_core
                 #link_section
-                #ocm
                 static mut #name: rtfm::export::MaybeUninit<#ty> =
                     rtfm::export::MaybeUninit::uninit();
             ));
@@ -379,7 +376,7 @@ fn tasks(
                 let (cfg_fq, mk_loc, fq_ty, expr) = if receiver == sender {
                     (
                         cfg_sender.clone(),
-                        Box::new(|| None) as Box<Fn() -> _>,
+                        Box::new(|| link_local(app, false)) as Box<Fn() -> _>,
                         quote!(rtfm::export::SCFQ<#cap_ty>),
                         quote!(unsafe { rtfm::export::SCFQ::u8_sc() }),
                     )
@@ -510,7 +507,7 @@ fn dispatchers(app: &App, analysis: &Analysis) -> Vec<proc_macro2::TokenStream> 
                 let (cfg_rq, mk_loc, rq_ty, expr) = if receiver == sender {
                     (
                         cfg_sender.clone(),
-                        Box::new(|| None) as Box<Fn() -> _>,
+                        Box::new(|| link_local(app, false)) as Box<Fn() -> _>,
                         quote!(rtfm::export::SCRQ<#t, #cap_ty>),
                         quote!(unsafe { rtfm::export::SCRQ::u8_sc() }),
                     )
@@ -716,12 +713,40 @@ fn assertions(app: &App, analysis: &Analysis) -> Vec<proc_macro2::TokenStream> {
 
     for task in &analysis.tasks_assert_send {
         let (_, _, _, ty) = regroup_inputs(&app.tasks[task].inputs);
-        stmts.push(quote!(rtfm::export::assert_send::<#ty>();));
+        let assert = if app.cores == 1 {
+            quote!(assert_send)
+        } else {
+            quote!(assert_cross_send)
+        };
+        stmts.push(quote!(rtfm::export::#assert::<#ty>();));
     }
 
-    // all late resources need to be `Send`
+    for task in &analysis.tasks_assert_local_send {
+        let (_, _, _, ty) = regroup_inputs(&app.tasks[task].inputs);
+        let assert = if app.cores == 1 {
+            quote!(assert_send)
+        } else {
+            quote!(assert_local_send)
+        };
+        stmts.push(quote!(rtfm::export::#assert::<#ty>();));
+    }
+
     for ty in &analysis.resources_assert_send {
-        stmts.push(quote!(rtfm::export::assert_send::<#ty>();));
+        let assert = if app.cores == 1 {
+            quote!(assert_send)
+        } else {
+            quote!(assert_cross_send)
+        };
+        stmts.push(quote!(rtfm::export::#assert::<#ty>();));
+    }
+
+    for ty in &analysis.resources_assert_local_send {
+        let assert = if app.cores == 1 {
+            quote!(assert_send)
+        } else {
+            quote!(assert_local_send)
+        };
+        stmts.push(quote!(rtfm::export::#assert::<#ty>();));
     }
 
     stmts
@@ -1064,17 +1089,6 @@ fn idle(
 }
 
 /* Support code */
-fn link_ocm(has_ocm: bool) -> Option<proc_macro2::TokenStream> {
-    if has_ocm {
-        static COUNT: AtomicUsize = AtomicUsize::new(0);
-
-        let section = format!(".ocm.{}", COUNT.fetch_add(1, Ordering::Relaxed));
-        Some(quote!(#[link_section = #section]))
-    } else {
-        None
-    }
-}
-
 fn resources_struct(
     kind: Kind,
     priority: u8,
@@ -1131,15 +1145,27 @@ fn resources_struct(
         if kind.is_init() {
             if !analysis.ownerships.contains_key(name) {
                 // owned by `init`
-                fields.push(quote!(
-                    #(#cfgs)*
-                    pub #name: &'static #mut_ #ty
-                ));
+                if app.cores != 1 && mut_.is_some() {
+                    fields.push(quote!(
+                        #(#cfgs)*
+                        pub #name: rtfm::Local<#ty>
+                    ));
 
-                values.push(quote!(
-                    #(#cfgs)*
-                    #name: &#mut_ #name
-                ));
+                    values.push(quote!(
+                        #(#cfgs)*
+                        #name: rtfm::Local::pin(&mut #name)
+                    ));
+                } else {
+                    fields.push(quote!(
+                        #(#cfgs)*
+                        pub #name: &'static #mut_ #ty
+                    ));
+
+                    values.push(quote!(
+                        #(#cfgs)*
+                        #name: &#mut_ #name
+                    ));
+                }
             } else {
                 // owned by someone else
                 lt = Some(quote!('a));
@@ -1182,6 +1208,24 @@ fn resources_struct(
                     continue;
                 }
             } else {
+                if kind.runs_once()
+                    && app.cores != 1
+                    && mut_.is_some()
+                    && analysis.locations[name].is_some()
+                {
+                    fields.push(quote!(
+                        #(#cfgs)*
+                        pub #name: rtfm::Local<#ty>
+                    ));
+
+                    values.push(quote!(
+                        #(#cfgs)*
+                        #name: rtfm::Local::pin(&#mut_ #name)
+                    ));
+
+                    continue;
+                }
+
                 let lt = if kind.runs_once() {
                     quote!('static)
                 } else {
@@ -1366,39 +1410,56 @@ fn locals(
 
     let mut has_cfgs = false;
     for (name, static_) in statics {
-        let lt = if runs_once {
-            quote!('static)
-        } else {
-            lt = Some(quote!('a));
-            quote!('a)
-        };
-
         let attrs = &static_.attrs;
         let cfgs = &static_.cfgs;
         let expr = &static_.expr;
-        let ocm = link_ocm(static_.has_ocm);
+        let global = static_.global;
         let ty = &static_.ty;
+
+        let lt = if runs_once {
+            if app.cores != 1 && !global {
+                fields.push(quote!(
+                    #(#cfgs)*
+                    #name: rtfm::Local<#ty>
+                ));
+
+                values.push(quote!(
+                    #(#cfgs)*
+                    #name: rtfm::Local::pin(&mut #name)
+                ));
+
+                None
+            } else {
+                Some(quote!('static))
+            }
+        } else {
+            lt = Some(quote!('a));
+            lt.clone()
+        };
 
         if !cfgs.is_empty() {
             has_cfgs = true;
         }
 
-        fields.push(quote!(
-            #(#cfgs)*
-            #name: &#lt mut #ty
-        ));
-
+        let link_local = link_local(app, global);
         items.push(quote!(
             #(#attrs)*
             #(#cfgs)*
-            #ocm
+            #link_local
             static mut #name: #ty = #expr
         ));
 
-        values.push(quote!(
-            #(#cfgs)*
-            #name: &mut #name
-        ));
+        if let Some(lt) = lt {
+            fields.push(quote!(
+                #(#cfgs)*
+                #name: &#lt mut #ty
+            ));
+
+            values.push(quote!(
+                #(#cfgs)*
+                #name: &mut #name
+            ));
+        }
 
         lets.push(quote!(
             #(#cfgs)*
@@ -1580,6 +1641,19 @@ fn module(kind: Kind, resources_lt: bool, app: &App) -> proc_macro2::TokenStream
         )
     } else {
         quote!()
+    }
+}
+
+fn link_local(app: &App, global: bool) -> Option<proc_macro2::TokenStream> {
+    if app.cores == 1 || global {
+        None
+    } else {
+        static COUNT: AtomicUsize = AtomicUsize::new(0);
+
+        let section = format!(".local.{}", COUNT.fetch_add(1, Ordering::Relaxed));
+        Some(quote!(
+            #[link_section = #section]
+        ))
     }
 }
 

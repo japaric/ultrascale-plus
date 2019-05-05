@@ -10,6 +10,7 @@ name = "rtfm"
 [dependencies]
 cortex-r = { path = "../cortex-r" }
 microamp = { git = "https://github.com/japaric/microamp" }
+spin = "0.5.0"
 zup = { path = "../zup" }
 zup-rt = { path = "../zup-rt" }
 zup-rtfm-macros = { path = "macros" }

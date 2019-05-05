@@ -9,6 +9,34 @@ use syn::parse;
 use crate::{syntax::App, NSGIS};
 
 pub fn app(app: &App) -> parse::Result<()> {
+    // in single-core context no static should use the `#[global]` attribute
+    if app.cores == 1 {
+        let main = &app.mains[0];
+        for (name, static_) in main
+            .init
+            .iter()
+            .flat_map(|init| &init.statics)
+            .chain(main.idle.iter().flat_map(|idle| &idle.statics))
+            .chain(app.tasks.values().flat_map(|task| &task.statics))
+        {
+            if static_.global {
+                return Err(parse::Error::new(
+                    name.span(),
+                    "statics can NOT be marked as `#[global]` in single-core applications",
+                ));
+            }
+        }
+    }
+
+    for (name, static_) in app.tasks.values().flat_map(|task| &task.statics) {
+        if static_.global {
+            return Err(parse::Error::new(
+                name.span(),
+                "statics within a `#[task]` can NOT be marked as `#[global]`",
+            ));
+        }
+    }
+
     // Check that all referenced resources have been declared and that `static mut` resources are
     // *not* shared between cores
     let mut mut_resources = HashMap::new();
