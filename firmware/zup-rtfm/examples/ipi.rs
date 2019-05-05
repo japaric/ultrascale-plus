@@ -21,32 +21,27 @@
 #![no_main]
 #![no_std]
 
-extern crate panic_dcc;
+const IPI_CH1_NR: u16 = 65;
+const IPI_CH2_NR: u16 = 66;
 
 use core::{mem, ops, ptr};
 
-use cortex_r::{
-    asm,
-    gic::{ICC, ICD},
-};
 use arm_dcc::dprintln;
+use cortex_r::gic::{ICC, ICD};
+use panic_dcc as _;
 use zup::IPI;
 use zup_rt::{entry, interrupt};
 
-const IPI_CH1: u16 = 65;
-const IPI_CH2: u16 = 66;
-
-#[microamp::app]
-const AMP: () = {
-    #[entry]
-    unsafe fn main() -> ! {
+#[entry]
+fn main() -> ! {
+    unsafe {
         dprintln!("core #{}", if cfg!(core = "0") { 0 } else { 1 });
 
-        let mut icc = ICC::take().unwrap();
+        let icc = ICC::steal();
         let ipi = zup::Peripherals::steal().IPI;
 
         // disable interrupt routing and signaling during configuration
-        icc.disable();
+        ICC::disable();
 
         // set priority mask to the lowest priority
         icc.ICCPMR.write(248);
@@ -57,28 +52,28 @@ const AMP: () = {
 
         // the ICD peripheral is shared; make sure we initialize it just once
         if cfg!(core = "1") {
-            let mut icd = ICD::take().unwrap();
+            let icd = ICD::steal();
 
-            icd.disable();
+            ICD::disable();
 
             // unmask SPI IPI_CH1
-            ICD::unmask(IPI_CH1);
+            ICD::unmask(IPI_CH1_NR);
 
             // unmask SPI IPI_CH2
-            ICD::unmask(IPI_CH2);
+            ICD::unmask(IPI_CH2_NR);
 
             // route SPI IPI_CH1 to R5#0
-            icd.ICDIPTR_rw[usize::from(IPI_CH1) - 32].write(1 << 0);
+            icd.ICDIPTR_rw[usize::from(IPI_CH1_NR) - 32].write(1 << 0);
 
             // route SPI IPI_CH2 to R5#1
-            icd.ICDIPTR_rw[usize::from(IPI_CH2) - 32].write(1 << 1);
+            icd.ICDIPTR_rw[usize::from(IPI_CH2_NR) - 32].write(1 << 1);
 
             // set the priority of IPI_CH{1,2} to the second lowest priority
-            icd.ICDIPR[usize::from(IPI_CH1)].write(240);
-            icd.ICDIPR[usize::from(IPI_CH2)].write(240);
+            icd.ICDIPR[usize::from(IPI_CH1_NR)].write(240);
+            icd.ICDIPR[usize::from(IPI_CH2_NR)].write(240);
 
             // enable interrupt routing
-            icd.enable();
+            ICD::enable();
         }
 
         if cfg!(core = "0") {
@@ -98,65 +93,58 @@ const AMP: () = {
         // unmask IRQ
         cortex_r::enable_irq();
 
-        loop_();
+        loop {}
     }
+}
 
-    #[no_mangle]
-    fn loop_() -> ! {
-        loop {
-            asm::nop();
+#[cfg(core = "0")]
+#[interrupt]
+fn IPI_CH1() {
+    unsafe {
+        let ipi = &*IPI::ptr();
+
+        let isr = ipi.ch1_isr.read();
+        if isr.ch2().bit_is_set() {
+            // clear interrupt bit
+            ipi.ch1_isr.write(|w| w.ch2().set_bit());
+
+            dprintln!(
+                "IPI_CH1(src=RPU1, response={:#x})",
+                BUFFERS.read_response::<i32>(Agent::RPU0, Agent::RPU1)
+            );
+        } else {
+            dprintln!("IPI_CH1(isr={:#?})", isr.bits());
         }
     }
+}
 
-    #[cfg(core = "0")]
-    #[interrupt]
-    fn IPI_CH1() {
-        unsafe {
-            let ipi = &*IPI::ptr();
+#[cfg(core = "1")]
+#[interrupt]
+fn IPI_CH2() {
+    unsafe {
+        let ipi = &*IPI::ptr();
 
-            let isr = ipi.ch1_isr.read();
-            if isr.ch2().bit_is_set() {
-                // clear interrupt bit
-                ipi.ch1_isr.write(|w| w.ch2().set_bit());
+        let isr = ipi.ch2_isr.read();
+        if isr.ch1().bit_is_set() {
+            // clear interrupt bit
+            ipi.ch2_isr.write(|w| w.ch1().set_bit());
 
-                dprintln!(
-                    "IPI_CH1(src=RPU1, response={:#x})",
-                    BUFFERS.read_response::<i32>(Agent::RPU0, Agent::RPU1)
-                );
-            } else {
-                dprintln!("IPI_CH1(isr={:#?})", isr.bits());
-            }
+            dprintln!(
+                "IPI_CH2(src=RPU0, request={:#x})",
+                BUFFERS.read_request::<i32>(Agent::RPU1, Agent::RPU0)
+            );
+
+            // send a response
+            // - write message
+            BUFFERS.write_response(Agent::RPU1, Agent::RPU0, 0x1722);
+
+            // - send IPI to channel 1
+            ipi.ch2_trig.write(|w| w.ch1().set_bit());
+        } else {
+            unimplemented!()
         }
     }
-
-    #[cfg(core = "1")]
-    #[interrupt]
-    fn IPI_CH2() {
-        unsafe {
-            let ipi = &*IPI::ptr();
-
-            let isr = ipi.ch2_isr.read();
-            if isr.ch1().bit_is_set() {
-                // clear interrupt bit
-                ipi.ch2_isr.write(|w| w.ch1().set_bit());
-
-                dprintln!(
-                    "IPI_CH2(src=RPU0, request={:#x})",
-                    BUFFERS.read_request::<i32>(Agent::RPU1, Agent::RPU0)
-                );
-
-                // send a response
-                // - write message
-                BUFFERS.write_response(Agent::RPU1, Agent::RPU0, 0x1722);
-
-                // - send IPI to channel 1
-                ipi.ch2_trig.write(|w| w.ch1().set_bit());
-            } else {
-                unimplemented!()
-            }
-        }
-    }
-};
+}
 
 // NOTE unsynchronized access
 struct BUFFERS;

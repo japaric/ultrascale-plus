@@ -1218,10 +1218,17 @@ fn resources_struct(
                         pub #name: rtfm::Local<#ty>
                     ));
 
-                    values.push(quote!(
-                        #(#cfgs)*
-                        #name: rtfm::Local::pin(&#mut_ #name)
-                    ));
+                    if res.expr.is_none() {
+                        values.push(quote!(
+                            #(#cfgs)*
+                            #name: rtfm::Local::pin(&mut *(#name.as_mut_ptr()))
+                        ));
+                    } else {
+                        values.push(quote!(
+                            #(#cfgs)*
+                            #name: rtfm::Local::pin(&mut #name)
+                        ));
+                    }
 
                     continue;
                 }
