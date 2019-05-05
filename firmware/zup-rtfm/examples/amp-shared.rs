@@ -27,7 +27,7 @@
 #![no_main]
 #![no_std]
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use arm_dcc::dprintln;
 use microamp::shared;
@@ -35,17 +35,18 @@ use microamp::shared;
 use panic_dcc as _;
 use zup_rt::entry;
 
-// possible values of SEMAPHORE
-const CORE0: usize = 0;
-const CORE1: usize = 1;
-const LOCKED: usize = 2;
+// non-atomic variable
+#[shared] // <- means: visible to all the cores
+static mut SHARED: u64 = 0;
 
-// used as a mutex
-#[shared] // <- means: shared between all the cores
-static SEMAPHORE: AtomicUsize = AtomicUsize::new(CORE0);
-
+// used to synchronize access to `SHARED`
 #[shared]
-static mut SHARED: usize = 0;
+static SEMAPHORE: AtomicU8 = AtomicU8::new(CORE0);
+
+// possible values of SEMAPHORE
+const CORE0: u8 = 0;
+const CORE1: u8 = 1;
+const LOCKED: u8 = 2;
 
 #[entry]
 fn main() -> ! {
@@ -60,7 +61,10 @@ fn main() -> ! {
     let mut done = false;
     while !done {
         // try to acquire the lock
-        while SEMAPHORE.compare_and_swap(our_turn, LOCKED, Ordering::AcqRel) != our_turn {
+        while SEMAPHORE
+            .compare_exchange(our_turn, LOCKED, Ordering::AcqRel, Ordering::Relaxed)
+            .is_err()
+        {
             // spin wait
         }
 
@@ -75,7 +79,7 @@ fn main() -> ! {
             }
         }
 
-        // release the lock / unblock the other core
+        // release the lock & unblock the other core
         SEMAPHORE.store(next_core, Ordering::Release);
     }
 

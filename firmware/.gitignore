@@ -1,6 +1,5 @@
 *.log
 Cargo.lock
 psu_init.tcl
-rtfm-expansion.rs
 target
 zynqmp_utils.tcl

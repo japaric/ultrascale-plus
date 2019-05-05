@@ -8,8 +8,8 @@ use std::collections::HashSet;
 use proc_macro2::Span;
 use quote::quote;
 use syn::{
-    parse, parse_macro_input, spanned::Spanned, Item, ItemFn, ItemStatic, ReturnType, Stmt, Type,
-    Visibility,
+    parse, parse_macro_input, spanned::Spanned, AttrStyle, Attribute, Item, ItemFn, ItemStatic,
+    PathArguments, ReturnType, Stmt, Type, Visibility,
 };
 
 #[proc_macro_attribute]
@@ -45,6 +45,7 @@ pub fn entry(args: TokenStream, input: TokenStream) -> TokenStream {
 
     let ident = f.ident;
     quote!(
+        #[allow(non_snake_case)]
         #[inline(always)]
         fn #ident(#(#args,)*) -> ! {
             #(#stmts)*
@@ -134,7 +135,7 @@ pub fn interrupt(args: TokenStream, input: TokenStream) -> TokenStream {
     let ident = f.ident;
 
     let ident_s = ident.to_string();
-    let attrs = f.attrs;
+    let (ref cfgs, ref attrs) = extract_cfgs(f.attrs);
     let block = f.block;
     let stmts = block.stmts;
 
@@ -147,10 +148,12 @@ pub fn interrupt(args: TokenStream, input: TokenStream) -> TokenStream {
 
     quote!(
         #[allow(non_snake_case)]
+        #(#cfgs)*
         fn #ident() {
             #(#stmts)*
 
             #[export_name = #ident_s]
+            #(#cfgs)*
             #(#attrs)*
             fn __interrupt__() {
                 #(#items;)*
@@ -229,6 +232,29 @@ fn extract_static_muts(stmts: Vec<Stmt>) -> Result<(Vec<ItemStatic>, Vec<Stmt>),
     stmts.extend(istmts);
 
     Ok((statics, stmts))
+}
+
+fn eq(attr: &Attribute, name: &str) -> bool {
+    attr.style == AttrStyle::Outer && attr.path.segments.len() == 1 && {
+        let pair = attr.path.segments.first().unwrap();
+        let segment = pair.value();
+        segment.arguments == PathArguments::None && segment.ident.to_string() == name
+    }
+}
+
+fn extract_cfgs(attrs: Vec<Attribute>) -> (Vec<Attribute>, Vec<Attribute>) {
+    let mut cfgs = vec![];
+    let mut not_cfgs = vec![];
+
+    for attr in attrs {
+        if eq(&attr, "cfg") {
+            cfgs.push(attr);
+        } else {
+            not_cfgs.push(attr);
+        }
+    }
+
+    (cfgs, not_cfgs)
 }
 
 /// checks that a function signature

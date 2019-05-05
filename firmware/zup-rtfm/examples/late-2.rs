@@ -27,8 +27,8 @@ const APP: () = {
 
     #[idle(core = 1, resources = [X, Y])]
     fn idle(c: idle::Context) -> ! {
-        assert_eq!(*c.resources.X, 1);
-        assert_eq!(*c.resources.Y, 2);
+        c.resources.X.borrow(|x| assert_eq!(*x, 1));
+        c.resources.Y.borrow(|y| assert_eq!(*y, 2));
 
         dprintln!("idle");
 

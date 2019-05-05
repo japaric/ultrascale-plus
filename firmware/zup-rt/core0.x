@@ -1,10 +1,5 @@
 INCLUDE common.x;
 
-/* Initial stack pointer */
-__stack_top__ = ORIGIN(BTCM1_0) + LENGTH(BTCM1_0);
-
-INPUT(microamp-data.o);
-
 SECTIONS
 {
   .text :
@@ -20,36 +15,36 @@ SECTIONS
   {
     *(.rodata .rodata.*);
     . = ALIGN(4);
-  } > BTCM0_0
+  } > ATCM
+
+  .local : ALIGN(4)
+  {
+    *(.local.*);
+    . = ALIGN(4);
+  } > BTCM0
 
   .bss : ALIGN(4)
   {
     *(.bss .bss.*);
     . = ALIGN(4);
-  } > BTCM0_0
+  } > OCM0
 
   .data : ALIGN(4)
   {
     *(.data .data.*);
     . = ALIGN(4);
-  } > BTCM0_0
+  } > OCM0
 
   .resource_table : ALIGN(4)
   {
     KEEP(*(.resource_table));
-  } > BTCM0_0
+  } > OCM0
 
   .shared : ALIGN(4)
   {
     KEEP(microamp-data.o(.shared));
     . = ALIGN(4);
-  } > OCM0
-
-  .ocm : ALIGN(4)
-  {
-    *(.ocm.*);
-    . = ALIGN(4);
-  } > OCM1
+  } > OCM2
 
   /* Discarded sections */
   /DISCARD/ :

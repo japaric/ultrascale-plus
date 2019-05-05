@@ -14,30 +14,11 @@ main() {
             local examples=
 
             if [ ${PAC:-0} == 1 ]; then
-                features="--features pac"
-                examples=(
-                    ipi
-                    ipi-apu
-                    leds-off
-                    leds-on
-                    rtfm-interrupt
-                    rtfm-lock
-                    rtfm-message
-                    rtfm-time
-                )
+                cargo build --examples --features pac
+                cargo build --examples --features pac --release
             else
-                examples=(
-                    abort
-                    hello
-                    panic
-                    trace
-                )
+                cargo build --examples --release
             fi
-
-            for ex in ${examples[@]}; do
-                cargo build --example $ex $features
-                cargo build --example $ex $features --release
-            done
 
             popd
 
@@ -46,20 +27,31 @@ main() {
                  cargo install microamp-tools --debug --git https://github.com/japaric/microamp -f
 
                 examples=(
-                    amp
+                    amp-channel
+                    amp-hello
+                    amp-shared
                     cross
+                    global
+                    ipi
                     late-1
                     late-2
                     late-3
+                    local
                     lock
                     message
+                    pool
                     rv
                     time
                 )
 
                 pushd firmware/zup-rtfm
+                # quickly check all the examples
                 for ex in ${examples[@]}; do
                     cargo microamp --example $ex --check -v
+                done
+
+                # now link-test them
+                for ex in ${examples[@]}; do
                     cargo microamp --example $ex -v
                     cargo microamp --example $ex --release
                 done

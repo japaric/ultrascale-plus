@@ -34,7 +34,7 @@ const APP: () = {
     #[init(core = 0, spawn = [pong])]
     fn init(c: init::Context) {
         // place this buffer in the OCM to avoid having both cores contend for the ATCM_0
-        #[ocm]
+        #[global]
         static mut X: [u8; 1024] = [0; 1024];
 
         dprintln!("capacity: {}", A::grow(X));
