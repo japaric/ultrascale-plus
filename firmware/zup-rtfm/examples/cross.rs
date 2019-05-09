@@ -36,6 +36,7 @@
 //! ~IRQ(ICCIAR { cpuid: 0, ackintid: 0 })
 //! ```
 
+#![feature(proc_macro_hygiene)] // required by `dprint*!`
 #![no_main]
 #![no_std]
 
@@ -50,7 +51,7 @@ const APP: () = {
     fn init(c: init::Context) {
         dprintln!("init");
 
-        c.spawn.pong(0).unwrap();
+        c.spawn.pong(0).ok().unwrap();
     }
 
     #[idle(core = 0)]
@@ -65,7 +66,7 @@ const APP: () = {
         dprintln!("ping({})", x);
 
         if x < LIMIT {
-            c.spawn.pong(x + 1).unwrap();
+            c.spawn.pong(x + 1).ok().unwrap();
         }
     }
 
@@ -86,7 +87,7 @@ const APP: () = {
         dprintln!("pong({})", x);
 
         if x < LIMIT {
-            c.spawn.ping(x + 1).unwrap();
+            c.spawn.ping(x + 1).ok().unwrap();
         }
     }
 };

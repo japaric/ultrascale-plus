@@ -16,6 +16,7 @@
 //! X has address 0xffe217ac
 //! ```
 
+#![feature(proc_macro_hygiene)] // required by `dprint*!`
 #![no_main]
 #![no_std]
 

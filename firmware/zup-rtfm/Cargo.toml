@@ -21,5 +21,13 @@ git = "https://github.com/japaric/heapless"
 rev = "ade3f5ecbf55fc803a87555ab4061145a95fe4d5"
 
 [dev-dependencies]
-arm-dcc = { git = "https://github.com/rust-embedded/arm-dcc" }
-panic-dcc = { git = "https://github.com/rust-embedded/arm-dcc" }
+ufmt = "0.1.0-beta.4"
+
+[dev-dependencies.arm-dcc]
+branch = "ufmt"
+features = ["inline-asm"]
+git = "https://github.com/japaric/arm-dcc"
+
+[dev-dependencies.panic-dcc]
+branch = "ufmt"
+git = "https://github.com/japaric/arm-dcc"

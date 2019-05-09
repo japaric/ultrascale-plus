@@ -18,6 +18,7 @@
 //! ~IRQ(ICCIAR { cpuid: 0, ackintid: 66 })
 //! ```
 
+#![feature(proc_macro_hygiene)] // required by ufmt::uwrite!
 #![no_main]
 #![no_std]
 
@@ -109,7 +110,7 @@ fn IPI_CH1() {
             ipi.ch1_isr.write(|w| w.ch2().set_bit());
 
             dprintln!(
-                "IPI_CH1(src=RPU1, response={:#x})",
+                "IPI_CH1(src=RPU1, response={})",
                 BUFFERS.read_response::<i32>(Agent::RPU0, Agent::RPU1)
             );
         } else {
@@ -130,7 +131,7 @@ fn IPI_CH2() {
             ipi.ch2_isr.write(|w| w.ch1().set_bit());
 
             dprintln!(
-                "IPI_CH2(src=RPU0, request={:#x})",
+                "IPI_CH2(src=RPU0, request={})",
                 BUFFERS.read_request::<i32>(Agent::RPU1, Agent::RPU0)
             );
 

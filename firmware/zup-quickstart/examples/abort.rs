@@ -8,14 +8,14 @@
 //! ```
 
 #![feature(core_intrinsics)]
+#![feature(proc_macro_hygiene)] // required by `dprint*!`
 #![no_main]
 #![no_std]
-
-extern crate panic_dcc;
 
 use core::intrinsics;
 
 use arm_dcc::dprintln;
+use panic_dcc as _;
 use zup_rt::{entry, exception};
 
 #[entry]

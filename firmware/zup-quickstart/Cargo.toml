@@ -41,16 +41,23 @@ name = "rtfm-time-2"
 required-features = ["pac"]
 
 [dependencies]
-cortex-r = { path = "../cortex-r" }
-panic-dcc = { git = "https://github.com/rust-embedded/arm-dcc" }
 panic-halt = "0.2.0"
 zup = { path = "../zup", optional = true }
 zup-rt = { path = "../zup-rt" }
 zup-rtfm = { path = "../zup-rtfm", optional = true }
 
+[dependencies.panic-dcc]
+branch = "ufmt"
+git = "https://github.com/japaric/arm-dcc"
+
+[dev-dependencies]
+cortex-r = { path = "../cortex-r" }
+ufmt = "0.1.0-beta.4"
+
 [dev-dependencies.arm-dcc]
+branch = "ufmt"
 features = ["inline-asm"]
-git = "https://github.com/rust-embedded/arm-dcc"
+git = "https://github.com/japaric/arm-dcc"
 
 [features]
 pac = ["zup", "zup-rtfm"]

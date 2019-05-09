@@ -11,12 +11,6 @@ SECTIONS
     . = ALIGN(4);
   } > ATCM
 
-  .rodata : ALIGN(4)
-  {
-    *(.rodata .rodata.*);
-    . = ALIGN(4);
-  } > ATCM
-
   .local : ALIGN(4)
   {
     *(.local.*);
@@ -32,6 +26,12 @@ SECTIONS
   .data : ALIGN(4)
   {
     *(.data .data.*);
+    . = ALIGN(4);
+  } > OCM0
+
+  .rodata : ALIGN(4)
+  {
+    *(.rodata .rodata.*);
     . = ALIGN(4);
   } > OCM0
 
