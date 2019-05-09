@@ -1451,12 +1451,12 @@ fn locals(
             if app.cores != 1 && !global {
                 fields.push(quote!(
                     #(#cfgs)*
-                    #name: rtfm::Local<#ty>
+                    #name: rtfm::LocalMut<#ty>
                 ));
 
                 values.push(quote!(
                     #(#cfgs)*
-                    #name: rtfm::Local::pin(&mut #name)
+                    #name: rtfm::LocalMut::pin(&mut #name)
                 ));
 
                 None
