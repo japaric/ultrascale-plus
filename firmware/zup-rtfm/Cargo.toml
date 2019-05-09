@@ -16,9 +16,8 @@ zup-rt = { path = "../zup-rt" }
 zup-rtfm-macros = { path = "macros" }
 
 [dependencies.heapless]
-features = ["const-fn"]
 git = "https://github.com/japaric/heapless"
-rev = "ade3f5ecbf55fc803a87555ab4061145a95fe4d5"
+rev = "8510b0171c654a8676f0638339964121010f7b82"
 
 [dev-dependencies]
 ufmt = "0.1.0-beta.4"

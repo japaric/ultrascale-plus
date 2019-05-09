@@ -196,42 +196,45 @@ fn resources(
             ));
         }
 
-        if let Some(Ownership::Shared { ceiling }) = analysis.ownerships.get(name) {
-            let ptr = if res.expr.is_none() {
-                quote!(#name.as_mut_ptr())
-            } else {
-                quote!(&mut #name)
-            };
+        // generate a resource proxy when needed
+        if res.mutability.is_some() {
+            if let Some(Ownership::Shared { ceiling }) = analysis.ownerships.get(name) {
+                let ptr = if res.expr.is_none() {
+                    quote!(#name.as_mut_ptr())
+                } else {
+                    quote!(&mut #name)
+                };
 
-            mod_resources.push(quote!(
-                #cfg_core
-                pub struct #name<'a> {
-                    priority: &'a Priority,
-                }
-
-                #cfg_core
-                impl<'a> #name<'a> {
-                    #[inline(always)]
-                    pub unsafe fn new(priority: &'a Priority) -> Self {
-                        #name { priority }
+                mod_resources.push(quote!(
+                    #cfg_core
+                    pub struct #name<'a> {
+                        priority: &'a Priority,
                     }
 
-                    #[inline(always)]
-                    pub unsafe fn priority(&self) -> &Priority {
-                        self.priority
-                    }
-                }
-            ));
+                    #cfg_core
+                    impl<'a> #name<'a> {
+                        #[inline(always)]
+                        pub unsafe fn new(priority: &'a Priority) -> Self {
+                            #name { priority }
+                        }
 
-            const_app.push(impl_mutex(
-                cfgs,
-                cfg_core,
-                true,
-                name,
-                quote!(#ty),
-                *ceiling,
-                ptr,
-            ));
+                        #[inline(always)]
+                        pub unsafe fn priority(&self) -> &Priority {
+                            self.priority
+                        }
+                    }
+                ));
+
+                const_app.push(impl_mutex(
+                    cfgs,
+                    cfg_core,
+                    true,
+                    name,
+                    quote!(#ty),
+                    *ceiling,
+                    ptr,
+                ));
+            }
         }
     }
 
@@ -378,14 +381,16 @@ fn tasks(
                         cfg_sender.clone(),
                         Box::new(|| link_local(app, false)) as Box<Fn() -> _>,
                         quote!(rtfm::export::SCFQ<#cap_ty>),
-                        quote!(unsafe { rtfm::export::SCFQ::u8_sc() }),
+                        quote!(rtfm::export::Queue(unsafe {
+                            rtfm::export::iQueue::u8_sc()
+                        })),
                     )
                 } else {
                     (
                         None,
                         Box::new(|| Some(quote!(#[rtfm::export::shared]))) as Box<Fn() -> _>,
                         quote!(rtfm::export::MCFQ<#cap_ty>),
-                        quote!(rtfm::export::MCFQ::u8()),
+                        quote!(rtfm::export::Queue(rtfm::export::iQueue::u8())),
                     )
                 };
 
@@ -509,14 +514,16 @@ fn dispatchers(app: &App, analysis: &Analysis) -> Vec<proc_macro2::TokenStream> 
                         cfg_sender.clone(),
                         Box::new(|| link_local(app, false)) as Box<Fn() -> _>,
                         quote!(rtfm::export::SCRQ<#t, #cap_ty>),
-                        quote!(unsafe { rtfm::export::SCRQ::u8_sc() }),
+                        quote!(rtfm::export::Queue(unsafe {
+                            rtfm::export::iQueue::u8_sc()
+                        })),
                     )
                 } else {
                     (
                         None,
                         Box::new(|| Some(quote!(#[rtfm::export::shared]))) as Box<Fn() -> _>,
                         quote!(rtfm::export::MCRQ<#t, #cap_ty>),
-                        quote!(rtfm::export::MCRQ::u8()),
+                        quote!(rtfm::export::Queue(rtfm::export::iQueue::u8())),
                     )
                 };
 
@@ -713,12 +720,7 @@ fn assertions(app: &App, analysis: &Analysis) -> Vec<proc_macro2::TokenStream> {
 
     for task in &analysis.tasks_assert_send {
         let (_, _, _, ty) = regroup_inputs(&app.tasks[task].inputs);
-        let assert = if app.cores == 1 {
-            quote!(assert_send)
-        } else {
-            quote!(assert_cross_send)
-        };
-        stmts.push(quote!(rtfm::export::#assert::<#ty>();));
+        stmts.push(quote!(rtfm::export::assert_send::<#ty>();));
     }
 
     for task in &analysis.tasks_assert_local_send {
@@ -732,12 +734,7 @@ fn assertions(app: &App, analysis: &Analysis) -> Vec<proc_macro2::TokenStream> {
     }
 
     for ty in &analysis.resources_assert_send {
-        let assert = if app.cores == 1 {
-            quote!(assert_send)
-        } else {
-            quote!(assert_cross_send)
-        };
-        stmts.push(quote!(rtfm::export::#assert::<#ty>();));
+        stmts.push(quote!(rtfm::export::assert_send::<#ty>();));
     }
 
     for ty in &analysis.resources_assert_local_send {
@@ -1145,16 +1142,28 @@ fn resources_struct(
         if kind.is_init() {
             if !analysis.ownerships.contains_key(name) {
                 // owned by `init`
-                if app.cores != 1 && mut_.is_some() {
-                    fields.push(quote!(
-                        #(#cfgs)*
-                        pub #name: rtfm::Local<#ty>
-                    ));
+                if app.cores != 1 {
+                    if mut_.is_some() {
+                        fields.push(quote!(
+                            #(#cfgs)*
+                            pub #name: rtfm::LocalMut<#ty>
+                        ));
 
-                    values.push(quote!(
-                        #(#cfgs)*
-                        #name: rtfm::Local::pin(&mut #name)
-                    ));
+                        values.push(quote!(
+                            #(#cfgs)*
+                            #name: rtfm::LocalMut::pin(&mut #name)
+                        ));
+                    } else {
+                        fields.push(quote!(
+                            #(#cfgs)*
+                            pub #name: rtfm::LocalRef<#ty>
+                        ));
+
+                        values.push(quote!(
+                            #(#cfgs)*
+                            #name: rtfm::LocalRef::pin(&#name)
+                        ));
+                    }
                 } else {
                     fields.push(quote!(
                         #(#cfgs)*
@@ -1208,26 +1217,41 @@ fn resources_struct(
                     continue;
                 }
             } else {
-                if kind.runs_once()
-                    && app.cores != 1
-                    && mut_.is_some()
-                    && analysis.locations[name].is_some()
-                {
-                    fields.push(quote!(
-                        #(#cfgs)*
-                        pub #name: rtfm::Local<#ty>
-                    ));
+                if kind.runs_once() && app.cores != 1 && analysis.locations[name].is_some() {
+                    if mut_.is_some() {
+                        fields.push(quote!(
+                            #(#cfgs)*
+                            pub #name: rtfm::LocalMut<#ty>
+                        ));
 
-                    if res.expr.is_none() {
-                        values.push(quote!(
-                            #(#cfgs)*
-                            #name: rtfm::Local::pin(&mut *(#name.as_mut_ptr()))
-                        ));
+                        if res.expr.is_none() {
+                            values.push(quote!(
+                                #(#cfgs)*
+                                #name: rtfm::LocalMut::pin(&mut *(#name.as_mut_ptr()))
+                            ));
+                        } else {
+                            values.push(quote!(
+                                #(#cfgs)*
+                                #name: rtfm::LocalMut::pin(&mut #name)
+                            ));
+                        }
                     } else {
-                        values.push(quote!(
+                        fields.push(quote!(
                             #(#cfgs)*
-                            #name: rtfm::Local::pin(&mut #name)
+                            pub #name: rtfm::LocalRef<#ty>
                         ));
+
+                        if res.expr.is_none() {
+                            values.push(quote!(
+                                #(#cfgs)*
+                                #name: rtfm::LocalRef::pin(&*(#name.as_ptr()))
+                            ));
+                        } else {
+                            values.push(quote!(
+                                #(#cfgs)*
+                                #name: rtfm::LocalRef::pin(&#name)
+                            ));
+                        }
                     }
 
                     continue;

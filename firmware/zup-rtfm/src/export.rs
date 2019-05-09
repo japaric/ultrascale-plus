@@ -4,8 +4,8 @@ pub use cortex_r::{
     enable_irq,
     gic::{Target, ICC, ICD},
 };
-pub use heapless::consts;
-use heapless::spsc::{MultiCore, Queue, SingleCore};
+use heapless::spsc::{MultiCore, SingleCore};
+pub use heapless::{consts, i::Queue as iQueue, spsc::Queue};
 pub use microamp::shared;
 pub use zup::TTC0;
 pub use zup_rt::Interrupt;
@@ -119,17 +119,6 @@ pub fn sgi(n: u8, core: Option<u8>) {
 pub fn logical2hw(logical: u8) -> u8 {
     ((1 << PRIORITY_BITS) - logical) << (8 - PRIORITY_BITS)
 }
-
-// reject `&'static T` because it may be pointing into `.rodata`
-pub fn assert_cross_send<T>()
-where
-    T: Send + NotStaticRef,
-{
-}
-
-pub auto trait NotStaticRef {}
-
-impl<T> !NotStaticRef for &'static T where T: ?Sized {}
 
 pub fn assert_send<T>()
 where
