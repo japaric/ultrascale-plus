@@ -15,23 +15,25 @@ pub mod export;
 
 /// core-local data, a `&'static mut` reference tied to a particular core
 #[derive(Eq, Ord, Hash, PartialEq, PartialOrd)]
-pub struct Local<T>
+pub struct LocalMut<T>
 where
     T: 'static,
 {
     inner: &'static mut T,
 }
 
-impl<T> Local<T> {
+const TCM_UPPER_BOUND: usize = 0x3_0000;
+
+impl<T> LocalMut<T> {
     /// Pins the reference to this core
     pub fn pin(p: &'static mut T) -> Self {
         debug_assert!(
-            (p as *mut T as usize) < 0x3_0000,
+            (p as *mut T as usize) < TCM_UPPER_BOUND,
             "can't pin pointer {:?}; it doesn't point into the aliased TCM",
             p as *mut T,
         );
 
-        Local { inner: p }
+        Self { inner: p }
     }
 
     /// Grants temporary access to the core-local data
@@ -45,17 +47,50 @@ impl<T> Local<T> {
     }
 }
 
+/// core-local data, a `&'static` reference tied to a particular core
+#[derive(Eq, Ord, Hash, PartialEq, PartialOrd)]
+pub struct LocalRef<T>
+where
+    T: 'static,
+{
+    inner: &'static T,
+}
+
+impl<T> LocalRef<T> {
+    /// Pins the reference to this core
+    pub fn pin(p: &'static T) -> Self {
+        debug_assert!(
+            (p as *const T as usize) < TCM_UPPER_BOUND,
+            "can't pin pointer {:?}; it doesn't point into the aliased TCM",
+            p as *const T,
+        );
+
+        Self { inner: p }
+    }
+
+    /// Grants temporary access to the core-local data
+    pub fn borrow<R>(&self, f: impl FnOnce(&T) -> R) -> R {
+        f(self.inner)
+    }
+}
+
 /// A type that's safe to send across tasks running *on the same core*
 pub auto trait LocalSend {}
 
 // Types that are cross-core Send are also local-core Send
 impl<T> LocalSend for T where T: Send {}
 
-// `Local<T>` is local-core Send if the inner type is cross-core Send
-impl<T> LocalSend for Local<T> where &'static mut T: Send {}
+// `LocalMut<T>` is local-core Send if the inner type is cross-core Send
+impl<T> LocalSend for LocalMut<T> where &'static mut T: Send {}
 
-// `Local<T>` is tied to a core and can't be send to a different core
-impl<T> !Send for Local<T> {}
+// `LocalRef<T>` is local-core Send if the inner type is cross-core Send
+impl<T> LocalSend for LocalRef<T> where &'static T: Send {}
+
+// `LocalMut<T>` is tied to a core and can't be sent to a different core
+impl<T> !Send for LocalMut<T> {}
+
+// `LocalRef<T>` is tied to a core and can't be sent to a different core
+impl<T> !Send for LocalRef<T> {}
 
 /// A measurement of a monotonically nondecreasing clock. Opaque and useful only with `Duration`.
 #[derive(Clone, Copy)]

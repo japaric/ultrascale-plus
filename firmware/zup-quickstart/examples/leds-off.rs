@@ -3,11 +3,10 @@
 #![no_main]
 #![no_std]
 
-extern crate panic_dcc;
-
 #[cfg(not(debug_assertions))]
 use core::sync::atomic::{self, Ordering};
 
+use panic_dcc as _;
 use zup_rt::entry;
 
 #[entry]

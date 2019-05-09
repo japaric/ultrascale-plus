@@ -14,6 +14,7 @@
 //! pong(0xfffd0384)
 //! ```
 
+#![feature(proc_macro_hygiene)] // required by `dprint*!`
 #![no_main]
 #![no_std]
 

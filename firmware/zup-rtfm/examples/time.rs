@@ -1,3 +1,4 @@
+#![feature(proc_macro_hygiene)] // required by `dprint*!`
 #![no_main]
 #![no_std]
 
@@ -9,7 +10,7 @@ use rtfm::{Duration, Instant};
 const APP: () = {
     #[init(core = 0, spawn = [ping])]
     fn init(c: init::Context) {
-        c.spawn.ping().unwrap();
+        c.spawn.ping().ok().unwrap();
     }
 
     #[task(core = 0, spawn = [pong])]
@@ -36,6 +37,6 @@ const APP: () = {
 #[inline(never)]
 fn print(dur: Duration) {
     // x -> y:  84 cycles
-    // x -> z: 156 cycles
+    // x -> z: 161 cycles
     dprintln!("{}", dur.as_cycles());
 }

@@ -8,15 +8,15 @@
 //! ~IRQ(ICCIAR { cpuid: 0, ackintid: 65 })
 //! ```
 
+#![feature(proc_macro_hygiene)] // required by `dprint*!`
 #![no_main]
 #![no_std]
-
-extern crate panic_dcc;
 
 use core::{mem, ops, ptr};
 
 use arm_dcc::dprintln;
 use cortex_r::gic::{ICC, ICD};
+use panic_dcc as _;
 use zup::IPI;
 use zup_rt::{entry, interrupt};
 

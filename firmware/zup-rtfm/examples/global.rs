@@ -1,3 +1,4 @@
+#![feature(proc_macro_hygiene)] // required by ufmt::uwrite!
 #![no_main]
 #![no_std]
 

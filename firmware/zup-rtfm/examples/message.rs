@@ -26,12 +26,12 @@
 //! ~IRQ(ICCIAR { cpuid: 1, ackintid: 0 })
 //! ```
 
+#![feature(proc_macro_hygiene)] // required by `dprint*!`
 #![no_main]
 #![no_std]
 
-extern crate panic_dcc;
-
 use arm_dcc::dprintln;
+use panic_dcc as _;
 use rtfm::app;
 
 #[app(cores = 2)]

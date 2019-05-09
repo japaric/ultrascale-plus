@@ -1,4 +1,5 @@
 #![deny(warnings)]
+#![feature(proc_macro_hygiene)]
 #![no_std]
 
 #[cfg(not(debug_assertions))]
@@ -12,7 +13,8 @@ pub use zup_rt_macros::{entry, exception, interrupt};
 #[allow(unused_attributes)]
 #[no_mangle]
 unsafe extern "C" fn DefaultHandler() {
-    // dprintln!("Unhandled exception");
+    #[cfg(debug_assertions)]
+    dprintln!("Unhandled exception");
 
     loop {
         // NOTE(compiler_fence) prevents LLVM from turning this infinite loop into an abort

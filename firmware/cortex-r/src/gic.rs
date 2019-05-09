@@ -140,6 +140,18 @@ impl fmt::Debug for ICCIAR {
     }
 }
 
+impl ufmt::uDebug for ICCIAR {
+    fn fmt<W>(&self, f: &mut ufmt::Formatter<'_, W>) -> Result<(), W::Error>
+    where
+        W: ufmt::uWrite,
+    {
+        f.debug_struct("ICCIAR")?
+            .field("cpuid", &self.cpuid())?
+            .field("ackintid", &self.ackintid())?
+            .finish()
+    }
+}
+
 impl ICCIAR {
     pub fn bits(&self) -> u32 {
         self.bits

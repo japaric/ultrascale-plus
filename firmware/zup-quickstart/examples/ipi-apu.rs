@@ -3,11 +3,10 @@
 #![no_main]
 #![no_std]
 
-extern crate panic_dcc;
-
 use core::{mem, ops, ptr};
 
 use cortex_r::gic::{ICC, ICD};
+use panic_dcc as _;
 use zup_rt::{entry, interrupt};
 
 #[entry]
@@ -15,8 +14,8 @@ fn main() -> ! {
     unsafe {
         const IPI_CH1: u16 = 65;
 
-        let mut icd = ICD::steal();
-        let mut icc = ICC::steal();
+        let icd = ICD::steal();
+        let icc = ICC::steal();
         let ipi = zup::Peripherals::steal().IPI;
 
         // disable interrupt routing and signaling during configuration
