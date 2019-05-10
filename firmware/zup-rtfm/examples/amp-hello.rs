@@ -24,7 +24,7 @@ use arm_dcc::dprintln;
 use panic_dcc as _; // panic handler
 use zup_rt::entry;
 
-// program entry point
+// program entry point for both cores
 #[entry]
 fn main() -> ! {
     static mut X: u32 = 0;

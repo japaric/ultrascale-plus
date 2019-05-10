@@ -32,19 +32,18 @@ use core::sync::atomic::{AtomicU8, Ordering};
 
 use arm_dcc::dprintln;
 use microamp::shared;
-// use panic_halt as _;
-use panic_dcc as _;
+use panic_dcc as _; // panic handler
 use zup_rt::entry;
 
 // non-atomic variable
-#[shared] // <- means: visible to all the cores
+#[shared] // <- means: same memory location on all the cores
 static mut SHARED: u64 = 0;
 
 // used to synchronize access to `SHARED`
 #[shared]
 static SEMAPHORE: AtomicU8 = AtomicU8::new(CORE0);
 
-// possible values of SEMAPHORE
+// possible values for SEMAPHORE
 const CORE0: u8 = 0;
 const CORE1: u8 = 1;
 const LOCKED: u8 = 2;
@@ -66,12 +65,13 @@ fn main() -> ! {
             .compare_exchange(our_turn, LOCKED, Ordering::AcqRel, Ordering::Relaxed)
             .is_err()
         {
-            // spin wait
+            // busy wait if the lock is held by the other core
         }
 
         // we acquired the lock; now we have exclusive access to `SHARED`
         unsafe {
             if SHARED >= 10 {
+                // stop at some arbitrary point
                 done = true;
             } else {
                 dprintln!("{}", SHARED);
