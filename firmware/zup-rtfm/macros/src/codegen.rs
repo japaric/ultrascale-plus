@@ -191,8 +191,8 @@ fn resources(
                 #(#cfgs)*
                 #cfg_core
                 #link_section
-                static mut #name: rtfm::export::MaybeUninit<#ty> =
-                    rtfm::export::MaybeUninit::uninit();
+                static mut #name: core::mem::MaybeUninit<#ty> =
+                    core::mem::MaybeUninit::uninit();
             ));
         }
 
@@ -421,7 +421,7 @@ fn tasks(
                 }
 
                 let elems = (0..cap)
-                    .map(|_| quote!(rtfm::export::MaybeUninit::uninit()))
+                    .map(|_| quote!(core::mem::MaybeUninit::uninit()))
                     .collect::<Vec<_>>();
 
                 let loc = mk_loc();
@@ -429,7 +429,7 @@ fn tasks(
                 const_app.push(quote!(
                     #cfg_fq
                     #loc
-                    static mut #inputs: [rtfm::export::MaybeUninit<#input_ty>; #cap_lit] =
+                    static mut #inputs: [core::mem::MaybeUninit<#input_ty>; #cap_lit] =
                         [#(#elems,)*];
                 ));
             }
@@ -572,7 +572,7 @@ fn dispatchers(app: &App, analysis: &Analysis) -> Vec<proc_macro2::TokenStream> 
                         let (_, tupled, pats, _) = regroup_inputs(&task.inputs);
 
                         let input = quote!(
-                            #inputs.get_unchecked(usize::from(index)).read()
+                            #inputs.get_unchecked(usize::from(index)).as_ptr().read()
                         );
 
                         quote!(
@@ -679,7 +679,7 @@ fn spawn(app: &App, analysis: &Analysis) -> Vec<proc_macro2::TokenStream> {
                         #let_priority
                         let input = #tupled;
                         if let Some(index) = #dequeue {
-                            #inputs.get_unchecked_mut(usize::from(index)).write(input);
+                            #inputs.get_unchecked_mut(usize::from(index)).as_mut_ptr().write(input);
 
                             #enqueue
 
@@ -962,7 +962,7 @@ fn post_init(app: &App, analysis: &Analysis) -> Vec<proc_macro2::TokenStream> {
         for name in late {
             stmts.push(quote!(
                 #cfg_core
-                #name.write(late.#name);
+                #name.as_mut_ptr().write(late.#name);
             ));
         }
     }
