@@ -1,4 +1,3 @@
-#![feature(maybe_uninit)]
 #![feature(proc_macro_hygiene)] // required by `dprint*!`
 #![no_main]
 #![no_std]
@@ -26,7 +25,7 @@ fn main() -> ! {
     while !RENDEZVOUS.load(Ordering::Acquire) {}
 
     let now = Instant::now();
-    let earlier: Instant = unsafe { INSTANT.read() };
+    let earlier: Instant = unsafe { INSTANT.as_ptr().read() };
 
     if let Some(dur) = now.checked_duration_since(earlier) {
         print(dur.as_cycles());
@@ -49,7 +48,7 @@ fn main() -> ! {
     rtfm::export::setup_counter();
 
     unsafe {
-        INSTANT.write(Instant::now());
+        INSTANT.as_mut_ptr().write(Instant::now());
     }
 
     RENDEZVOUS.store(true, Ordering::Release);

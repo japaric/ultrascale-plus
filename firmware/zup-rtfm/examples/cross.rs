@@ -1,13 +1,10 @@
 //! Cross core message passing
 //!
-//! NOTE: make sure you start RPU0 *after* RPU1
-//!
 //! Expected output
 //!
 //! ``` text
 //! $ tail -f dcc0.log
 //! init
-//! idle
 //! IRQ(ICCIAR { cpuid: 1, ackintid: 0 })
 //! ping(1)
 //! ~IRQ(ICCIAR { cpuid: 1, ackintid: 0 })
@@ -23,11 +20,9 @@
 //!
 //! ```
 //! $ tail -f dcc0.log
-//! init
 //! IRQ(ICCIAR { cpuid: 0, ackintid: 0 })
 //! pong(0)
 //! ~IRQ(ICCIAR { cpuid: 0, ackintid: 0 })
-//! idle
 //! IRQ(ICCIAR { cpuid: 0, ackintid: 0 })
 //! pong(2)
 //! ~IRQ(ICCIAR { cpuid: 0, ackintid: 0 })
@@ -43,22 +38,13 @@
 use arm_dcc::dprintln;
 use panic_dcc as _;
 
-const LIMIT: u32 = 5;
+const LIMIT: u32 = 5; // let's not run this forever
 
 #[rtfm::app(cores = 2)]
 const APP: () = {
     #[init(core = 0, spawn = [pong])]
     fn init(c: init::Context) {
-        dprintln!("init");
-
-        c.spawn.pong(0).ok().unwrap();
-    }
-
-    #[idle(core = 0)]
-    fn idle(_: idle::Context) -> ! {
-        dprintln!("idle");
-
-        loop {}
+        let _ = c.spawn.pong(0); // (ignore the error which will never happen)
     }
 
     #[task(core = 0, spawn = [pong])]
@@ -66,20 +52,8 @@ const APP: () = {
         dprintln!("ping({})", x);
 
         if x < LIMIT {
-            c.spawn.pong(x + 1).ok().unwrap();
+            let _ = c.spawn.pong(x + 1);
         }
-    }
-
-    #[init(core = 1)]
-    fn init(_: init::Context) {
-        dprintln!("init");
-    }
-
-    #[idle(core = 1)]
-    fn idle(_: idle::Context) -> ! {
-        dprintln!("idle");
-
-        loop {}
     }
 
     #[task(core = 1, spawn = [ping])]
@@ -87,7 +61,7 @@ const APP: () = {
         dprintln!("pong({})", x);
 
         if x < LIMIT {
-            c.spawn.ping(x + 1).ok().unwrap();
+            let _ = c.spawn.ping(x + 1);
         }
     }
 };

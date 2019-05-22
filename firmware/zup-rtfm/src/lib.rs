@@ -2,7 +2,6 @@
 
 #![deny(missing_docs)]
 #![deny(warnings)]
-#![feature(maybe_uninit)]
 #![feature(optin_builtin_traits)]
 #![no_std]
 
